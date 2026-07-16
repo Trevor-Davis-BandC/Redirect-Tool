@@ -1,4 +1,4 @@
-"""Migration Mapper -- Streamlit UI.
+"""Redirect Tool -- Streamlit UI.
 
 A local tool that compares an old site's sitemap to a new site's sitemap,
 suggests redirects, lets a support specialist review/edit them, validates
@@ -46,7 +46,7 @@ from project_storage import (
     ProjectFileError,
 )
 
-st.set_page_config(page_title="Migration Mapper", layout="wide")
+st.set_page_config(page_title="Redirect Tool", layout="wide")
 
 PAGE_NEW_PROJECT = "new_project"
 PAGE_DISCOVERY = "discovery"
@@ -82,7 +82,6 @@ def init_session_state() -> None:
         "project_name": "",
         "old_domain": "",
         "new_domain": "",
-        "production_domain": "",
         "old_sitemap_override": "",
         "new_sitemap_override": "",
         "old_sitemap_result": None,
@@ -109,13 +108,21 @@ def reset_project() -> None:
 
 def render_sidebar() -> None:
     with st.sidebar:
-        st.title("Migration Mapper")
+        st.title("Redirect Tool")
         st.caption("Old sitemap -> new sitemap -> Duda redirect CSV")
 
         st.markdown("### Workflow")
         for page_key in PAGE_ORDER:
-            marker = "➡️ " if st.session_state.page == page_key else "　"
-            st.write(f"{marker}{PAGE_LABELS[page_key]}")
+            is_current = st.session_state.page == page_key
+            label = f"➡️ {PAGE_LABELS[page_key]}" if is_current else PAGE_LABELS[page_key]
+            if st.button(
+                label,
+                key=f"nav_{page_key}",
+                use_container_width=True,
+                disabled=is_current,
+            ):
+                st.session_state.page = page_key
+                st.rerun()
 
         st.markdown("---")
         st.markdown("### Project")
@@ -129,7 +136,6 @@ def render_sidebar() -> None:
                 project_name=st.session_state.project_name,
                 old_domain=st.session_state.old_domain,
                 new_domain=st.session_state.new_domain,
-                production_domain=st.session_state.production_domain,
                 old_sitemap_override=st.session_state.old_sitemap_override,
                 new_sitemap_override=st.session_state.new_sitemap_override,
                 old_sitemap_url=(st.session_state.old_sitemap_result.sitemap_url or "")
@@ -166,7 +172,6 @@ def render_sidebar() -> None:
                 st.session_state.project_name = data["project_name"]
                 st.session_state.old_domain = data["old_domain"]
                 st.session_state.new_domain = data["new_domain"]
-                st.session_state.production_domain = data["production_domain"]
                 st.session_state.old_sitemap_override = data["old_sitemap_override"]
                 st.session_state.new_sitemap_override = data["new_sitemap_override"]
                 st.session_state.redirect_df = redirect_table_to_dataframe(data["redirect_table"])
@@ -185,7 +190,7 @@ def render_sidebar() -> None:
 def render_new_project_page() -> None:
     st.header("1. New Project")
     st.write(
-        "Enter the old and new website domains. Migration Mapper will look for each site's "
+        "Enter the old and new website domains. Redirect Tool will look for each site's "
         "XML sitemap automatically, or you can provide a direct sitemap URL."
     )
 
@@ -199,12 +204,11 @@ def render_new_project_page() -> None:
             value=st.session_state.new_domain,
             placeholder="newsite.com or https://12345.dudapreview.com",
         )
-        production_domain = st.text_input(
-            "Final production domain (optional)",
-            value=st.session_state.production_domain,
-            placeholder="Used only for reference; leave blank if unsure",
-        )
 
+        st.caption(
+            "Only fill in the sitemap URL overrides below if the automatic checks above fail to find "
+            "a site's sitemap."
+        )
         col1, col2 = st.columns(2)
         with col1:
             old_override = st.text_input(
@@ -236,7 +240,6 @@ def render_new_project_page() -> None:
     st.session_state.project_name = project_name.strip()
     st.session_state.old_domain = old_domain.strip()
     st.session_state.new_domain = new_domain.strip()
-    st.session_state.production_domain = production_domain.strip()
     st.session_state.old_sitemap_override = old_override.strip()
     st.session_state.new_sitemap_override = new_override.strip()
 

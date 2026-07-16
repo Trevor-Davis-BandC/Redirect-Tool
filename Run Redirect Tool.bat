@@ -1,5 +1,5 @@
 @echo off
-REM Double-click this file to launch Migration Mapper.
+REM Double-click this file to launch Redirect Tool.
 REM First run sets up a private Python environment and installs dependencies;
 REM later runs start almost instantly.
 
@@ -14,7 +14,7 @@ if errorlevel 1 (
 )
 
 if not exist ".venv" (
-    echo Setting up Migration Mapper for the first time ^(this can take a minute^)...
+    echo Setting up Redirect Tool for the first time ^(this can take a minute^)...
     python -m venv .venv
 )
 
@@ -32,9 +32,9 @@ echo Checking dependencies...
 python -m pip install -q --upgrade pip
 pip install -q -r requirements.txt
 
-echo Starting Migration Mapper... your browser will open automatically.
+echo Starting Redirect Tool... your browser will open automatically.
 streamlit run app.py
 
 echo.
-echo Migration Mapper has stopped.
+echo Redirect Tool has stopped.
 pause

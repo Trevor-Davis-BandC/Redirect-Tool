@@ -1,4 +1,4 @@
-"""Central configuration and safety limits for Migration Mapper.
+"""Central configuration and safety limits for Redirect Tool.
 
 Keep all tunable limits here so they are easy to find and adjust.
 """
@@ -7,7 +7,7 @@ APP_VERSION = "0.1.0"
 
 # --- Network / discovery limits ---
 REQUEST_TIMEOUT_SECONDS = 15
-USER_AGENT = "MigrationMapperBot/0.1 (+local website migration tool; contact: site-admin)"
+USER_AGENT = "RedirectToolBot/0.1 (+local website migration tool; contact: site-admin)"
 MAX_SITEMAP_FILES = 100
 MAX_URLS_PER_SITE = 20000
 MAX_SITEMAP_RECURSION_DEPTH = 5

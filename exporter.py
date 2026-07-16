@@ -69,8 +69,8 @@ def _clean_redirect_type(value: str) -> str:
 
 
 def build_export_filename(project_name: str, extension: str = "csv") -> str:
-    safe_name = re.sub(r"[^A-Za-z0-9_-]+", "-", (project_name or "migration-mapper").strip()).strip("-")
-    safe_name = safe_name or "migration-mapper"
+    safe_name = re.sub(r"[^A-Za-z0-9_-]+", "-", (project_name or "redirect-tool").strip()).strip("-")
+    safe_name = safe_name or "redirect-tool"
     today = date.today().isoformat()
     return f"{safe_name}-redirects-{today}.{extension}"
 

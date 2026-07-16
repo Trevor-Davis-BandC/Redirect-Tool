@@ -21,7 +21,6 @@ REQUIRED_TOP_LEVEL_KEYS = [
     "project_name",
     "old_domain",
     "new_domain",
-    "production_domain",
     "old_sitemap_override",
     "new_sitemap_override",
     "old_sitemap_url",
@@ -43,7 +42,6 @@ def build_project_dict(
     project_name: str,
     old_domain: str,
     new_domain: str,
-    production_domain: str,
     old_sitemap_override: str,
     new_sitemap_override: str,
     old_sitemap_url: str,
@@ -60,7 +58,6 @@ def build_project_dict(
         "project_name": project_name,
         "old_domain": old_domain,
         "new_domain": new_domain,
-        "production_domain": production_domain,
         "old_sitemap_override": old_sitemap_override,
         "new_sitemap_override": new_sitemap_override,
         "old_sitemap_url": old_sitemap_url,
@@ -87,14 +84,13 @@ def load_project_json(raw: str | bytes) -> dict:
         raise ProjectFileError(f"This file is not valid JSON ({exc}).") from exc
 
     if not isinstance(data, dict):
-        raise ProjectFileError("This file does not contain a Migration Mapper project object.")
+        raise ProjectFileError("This file does not contain a Redirect Tool project object.")
 
     defaults = {
         "app_version": APP_VERSION,
         "project_name": "",
         "old_domain": "",
         "new_domain": "",
-        "production_domain": "",
         "old_sitemap_override": "",
         "new_sitemap_override": "",
         "old_sitemap_url": "",

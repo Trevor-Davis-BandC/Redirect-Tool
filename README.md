@@ -1,6 +1,6 @@
-# Migration Mapper
+# Redirect Tool
 
-Migration Mapper is a local, browser-based tool for planning website
+Redirect Tool is a local, browser-based tool for planning website
 migrations. It compares the XML sitemap of an old website to the sitemap of
 a new website, suggests redirects between matching pages, lets you review
 and edit those suggestions, validates the final list, and exports a CSV you
@@ -105,7 +105,7 @@ tests/                        Pytest suite + XML fixtures
 
 ## How sitemap discovery works
 
-For each domain, Migration Mapper:
+For each domain, Redirect Tool:
 
 1. Fetches `/robots.txt` and looks for `Sitemap:` declarations.
 2. Falls back to trying, in order: `/sitemap.xml`, `/sitemap_index.xml`,
@@ -120,7 +120,7 @@ If you already know the sitemap URL (or the site doesn't publish one in a
 standard location), enter it directly in the **sitemap URL override** field
 on the New Project page -- this skips discovery and parses that URL only.
 
-Migration Mapper does **not** crawl a site to find pages; if no sitemap can
+Redirect Tool does **not** crawl a site to find pages; if no sitemap can
 be found, it tells you so and asks for a manual URL rather than guessing.
 
 Safety limits (configurable in `config.py`):
@@ -200,7 +200,7 @@ Rules applied automatically:
   `my-project-redirects-2026-07-15.csv`.
 
 You can also upload a different Duda-exported template CSV if a particular
-client/site needs different columns. Migration Mapper reads its header row,
+client/site needs different columns. Redirect Tool reads its header row,
 guesses which column is the source URL, the destination URL, and the
 redirect-type column (by looking for words like "old"/"source",
 "new"/"destination", and "type"/"redirect type"), and lets you correct any
