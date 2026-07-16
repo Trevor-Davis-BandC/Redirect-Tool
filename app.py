@@ -38,6 +38,7 @@ from exporter import (
     guess_column_mapping,
     read_template_headers,
 )
+from report import build_redirect_report_pdf
 from project_storage import (
     build_project_dict,
     save_project_json,
@@ -493,6 +494,26 @@ def render_export_page() -> None:
         [f"{s} -> {d}" for s, d in report.duplicate_redirect_rules],
     )
     _list_section("Blank or missing destinations", report.blank_or_malformed)
+
+    st.markdown("---")
+    st.subheader("Redirect Report")
+    st.write(
+        "A summary PDF listing every old URL, what it matched or was suggested, what was removed or "
+        "left unmapped, and any validation issues -- useful to keep on file or share with the team."
+    )
+    report_pdf_bytes = build_redirect_report_pdf(
+        st.session_state.project_name,
+        st.session_state.old_domain,
+        st.session_state.new_domain,
+        df,
+        report,
+    )
+    st.download_button(
+        "Download Redirect Report (PDF)",
+        data=report_pdf_bytes,
+        file_name=build_export_filename(st.session_state.project_name, "pdf"),
+        mime="application/pdf",
+    )
 
     st.markdown("---")
 
