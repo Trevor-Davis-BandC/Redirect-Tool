@@ -56,17 +56,29 @@ def test_token_similarity_match():
     assert r.best.confidence < 100
 
 
-def test_no_reliable_match_when_nothing_similar():
+def test_no_reliable_match_falls_back_to_homepage():
     old_urls = ["https://oldsite.com/xyzzy-quux-plugh/"]
     new_urls = ["https://newsite.com/completely-different-topic-area"]
 
     results = generate_redirect_suggestions(old_urls, new_urls)
     r = _result_for(results, old_urls[0])
 
-    assert r.include_default is False
+    assert r.best is not None
+    assert r.best.new_path == "/"
+    assert r.best.match_type == MATCH_TYPE_NO_MATCH
+    assert r.include_default is True
     assert r.status_default == "Needs Review"
-    if r.best is not None:
-        assert r.best.confidence < 60
+
+
+def test_no_reliable_match_uses_actual_homepage_url_when_present():
+    old_urls = ["https://oldsite.com/xyzzy-quux-plugh/"]
+    new_urls = ["https://newsite.com/", "https://newsite.com/completely-different-topic-area"]
+
+    results = generate_redirect_suggestions(old_urls, new_urls)
+    r = _result_for(results, old_urls[0])
+
+    assert r.best.new_path == "/"
+    assert r.best.new_url == "https://newsite.com/"
 
 
 def test_alternatives_capped_at_five():

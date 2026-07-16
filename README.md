@@ -12,20 +12,23 @@ URLs, and helps you build a clean redirect list.
 
 ## What it does
 
-1. You enter an old domain and a new domain (or a Duda preview-domain URL).
+1. You enter an old domain and a new domain (or a Duda preview-domain URL --
+   e.g. a temporary `*.bvmlocal.com` staging site).
 2. It looks for each site's XML sitemap automatically (checking `robots.txt`
    and common sitemap paths), following sitemap indexes and nested sitemaps.
-3. It compares every old URL against every new URL using a layered matching
-   system (exact path, exact slug, token similarity, partial similarity) and
-   assigns each suggestion a 0-100 confidence score.
-4. You review the suggestions in an editable table: approve, exclude, mark
-   as intentionally unmapped, pick an alternative destination, or type a
-   custom one.
-5. It validates the final list for common redirect problems (duplicates,
-   loops, chains, self-redirects, missing destinations, external links,
-   homepage fallbacks) before you export.
-6. It exports a CSV in Duda's `Old URL,New URL` format, or fills in an
-   uploaded Duda template CSV.
+3. It compares every old URL against every new URL and suggests a
+   destination for each one. If nothing on the new site is a clear match,
+   the destination defaults to the homepage (`/`) rather than being left
+   unmapped -- every old URL always ends up with a usable destination.
+4. You review the suggestions in a plain editable table: edit the
+   destination path directly, uncheck **Include** to exclude a row, or set
+   **Status** to *Unmapped* for pages you're intentionally not redirecting.
+5. It validates the final list for the issues that would actually break a
+   Duda import: duplicate source paths, blank/missing destinations, and
+   duplicate redirect rules.
+6. It exports a CSV matching Duda's own bulk redirect import template
+   (`Old Page URL,Destination Page URL, Redirect Type`), or fills in a
+   different uploaded Duda template CSV.
 
 ## Requirements
 
@@ -132,27 +135,25 @@ Safety limits (configurable in `config.py`):
 - XML is parsed with entity resolution and network access disabled, to
   prevent XXE-style attacks
 
-## How confidence scores work
+## How matching works
 
-Every old URL is compared against the new site's URLs using four layers,
-tried in order:
+The review table is intentionally simple -- no confidence scores or match
+labels are shown -- but under the hood, every old URL is still compared
+against the new site's URLs using a few layers, tried in order: exact
+normalized path, exact final URL segment ("slug"), then word/path
+similarity (via RapidFuzz). Whichever layer produces a hit becomes the
+suggested destination.
 
-| Match type | Confidence | What it means |
-|---|---|---|
-| Exact Path | 100 | The normalized path is identical on both sites. |
-| Exact Slug | 90-96 | The final URL segment matches exactly, even though the folder path differs. |
-| Token Similarity | up to 89 | The meaningful words in the path are very similar (via RapidFuzz), ignoring order. |
-| Partial Path Similarity | up to 79 | Some combination of shared words, slug, parent folder, and depth suggests a loose match. |
-| No Reliable Match | below 60 | Nothing on the new site is similar enough to suggest with confidence. |
+**If nothing is a reliable match, the destination defaults to the
+homepage (`/`)** instead of being left blank -- every old URL always ends
+up with a real destination ready to export. Rows are still marked
+**Status: Needs Review** in that case (and get a `302` instead of `301`,
+since it's a fallback rather than a confirmed page-to-page move) so you
+know to double-check them, but nothing blocks export by default.
 
 Common low-value words (`service`, `page`, `category`, `blog`, `html`,
 etc. -- see `config.STOP_WORDS`) are ignored only when scoring similarity.
 They are never removed from the URLs you actually see or export.
-
-Only exact/near-exact matches (95+) are included by default; everything
-else starts out unchecked with a status of "Needs Review" so a person signs
-off on it. Unmatched pages are **never** automatically redirected to the
-homepage -- they're flagged for manual review instead.
 
 The matching code is organized so a future content-based signal (page
 title, H1, meta description, body text) could be added as an additional
@@ -162,33 +163,50 @@ AI APIs or content crawling are used.
 
 ## How Duda CSV export works
 
-By default, the export is a two-column CSV:
+By default, the export matches Duda's own bulk URL redirect import
+template exactly -- a three-column CSV (see `sample_data/duda_import_template.csv`
+for the reference file this is based on):
 
 ```csv
-Old URL,New URL
-/old-page,/new-page
-/old-about,/about
+Old Page URL,Destination Page URL, Redirect Type
+/old-page,/new-page,301
+/old-about,/about,301
+/contact-old,/,302
 ```
+
+Note the header's leading space before `Redirect Type` -- that's preserved
+verbatim because it matches Duda's own template exactly.
+
+**Redirect Type** is editable per row in the review table (301 = permanent,
+302 = temporary). It defaults to `301` for confident, real page-to-page
+matches, and `302` for anything that falls back to the homepage or has no
+reliable match, since those aren't confirmed permanent mappings.
 
 Rules applied automatically:
 
 - Only rows with **Include** checked are exported.
 - Rows marked **Unmapped** are excluded, even if checked.
-- Only the path is exported (scheme/host are stripped; fragments are
-  removed; leading slashes are preserved).
+- Only the path is exported -- scheme and host are always stripped, fragments
+  are removed, and leading slashes are preserved. This matters if your "new"
+  site is actually a temporary staging/preview domain (e.g. a
+  `*.bvmlocal.com` test environment): that domain is discovered and used
+  only to compare site structure, and **never** appears in the exported CSV,
+  even though it may show up in the on-screen "Suggested New URL" column so
+  you can click through and preview the actual page while reviewing.
 - Duplicate source paths are collapsed to a single row (the validator will
   have already flagged this as a critical issue to resolve).
 - The file is UTF-8 encoded and values are CSV-escaped automatically.
 - The filename includes your project name and today's date, e.g.
   `my-project-redirects-2026-07-15.csv`.
 
-You can also upload a Duda-exported template CSV. Migration Mapper reads its
-header row, guesses which column is the source URL and which is the
-destination URL (by looking for words like "old"/"source" and
-"new"/"destination"), and lets you correct the guess if needed. Any other
-columns in the template are preserved and filled with a default value taken
-from the template's first example row (if it has one) -- your redirect data
-is never written into unrelated columns.
+You can also upload a different Duda-exported template CSV if a particular
+client/site needs different columns. Migration Mapper reads its header row,
+guesses which column is the source URL, the destination URL, and the
+redirect-type column (by looking for words like "old"/"source",
+"new"/"destination", and "type"/"redirect type"), and lets you correct any
+guess if needed. Any other columns in the template are preserved and filled
+with a default value taken from the template's first example row (if it has
+one) -- your redirect data is never written into unrelated columns.
 
 ## Known MVP limitations
 
@@ -201,9 +219,11 @@ is never written into unrelated columns.
   token-index-based comparison rather than a full brute-force comparison
   between every old/new pair, which can occasionally miss a loose match that
   shares no tokens at all.
-- Redirect-loop/chain detection operates only on the redirect list you've
-  built in this session -- it can't detect a loop that involves a rule
-  already live on the production server.
+- Validation is intentionally minimal -- it checks for duplicate source
+  paths, blank/missing destinations, and duplicate redirect rules. It does
+  not check for redirect loops/chains, external destinations, or how often a
+  destination is reused, since redirecting many unmatched pages to the
+  homepage is expected in this workflow, not a problem to flag.
 - There is no undo/history for edits within a session beyond re-loading a
   previously saved project JSON.
 
@@ -211,7 +231,7 @@ is never written into unrelated columns.
 
 - Optional content-based matching (title/H1/meta description similarity)
   using the documented extension point in `matcher.py`.
-- Bulk actions in the review table (e.g. "approve all Strong Suggestions").
+- Bulk actions in the review table (e.g. "approve all Needs Review rows").
 - Direct integration with Duda's API to push redirects without a manual CSV
   import, if/when that becomes available.
 - Support for additional sitemap formats (e.g. RSS/Atom-based feeds).

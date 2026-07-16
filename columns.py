@@ -9,15 +9,16 @@ COL_OLD_URL = "Old URL"
 COL_OLD_PATH = "Old Path"
 COL_NEW_URL = "Suggested New URL"
 COL_NEW_PATH = "Suggested New Path"
-COL_CONFIDENCE = "Confidence Score"
-COL_MATCH_TYPE = "Match Type"
+COL_REDIRECT_TYPE = "Redirect Type"
 COL_STATUS = "Status"
 COL_NOTES = "Notes"
 
-# Internal-only columns, not shown as primary table columns but carried
-# alongside each row for alternative-match lookups and status tracking.
-COL_ALTERNATIVES = "_alternatives"
-COL_EXPLANATION = "_explanation"
+# Kept for backward compatibility with saved project JSON files and existing
+# tests. No longer part of ALL_COLUMNS -- the review table no longer shows a
+# numeric confidence score or match-type label; matching still happens
+# internally in matcher.py, it's just not surfaced as separate columns.
+COL_CONFIDENCE = "Confidence Score"
+COL_MATCH_TYPE = "Match Type"
 
 ALL_COLUMNS = [
     COL_INCLUDE,
@@ -25,8 +26,7 @@ ALL_COLUMNS = [
     COL_OLD_PATH,
     COL_NEW_URL,
     COL_NEW_PATH,
-    COL_CONFIDENCE,
-    COL_MATCH_TYPE,
+    COL_REDIRECT_TYPE,
     COL_STATUS,
     COL_NOTES,
 ]
@@ -37,3 +37,7 @@ STATUS_EXCLUDED = "Excluded"
 STATUS_UNMAPPED = "Unmapped"
 
 ALL_STATUSES = [STATUS_APPROVED, STATUS_NEEDS_REVIEW, STATUS_EXCLUDED, STATUS_UNMAPPED]
+
+REDIRECT_TYPE_PERMANENT = "301"
+REDIRECT_TYPE_TEMPORARY = "302"
+REDIRECT_TYPE_OPTIONS = [REDIRECT_TYPE_PERMANENT, REDIRECT_TYPE_TEMPORARY]

@@ -1,16 +1,17 @@
 """Layered redirect-matching logic.
 
 For every old URL, this module finds the best candidate destination on the
-new site using a sequence of increasingly fuzzy strategies, and returns a
-confidence score, a match type label, up to five alternative destinations,
-and a plain-language explanation of why the match was chosen.
+new site using a sequence of increasingly fuzzy strategies. When nothing on
+the new site is a reliable match, the destination falls back to the new
+site's homepage ("/") rather than being left unmapped, so every old URL
+always has a usable destination ready to review and export.
 
 Matching layers (in priority order):
     1. Exact normalized path match            -> confidence 100
     2. Exact final slug match                 -> confidence 90-96
     3. Token similarity (RapidFuzz)            -> confidence up to 89
     4. Partial path similarity (composite)      -> confidence up to 79
-    5. No reliable match                        -> below 60
+    5. No reliable match                        -> falls back to "/"
 
 A placeholder interface for future content-based matching (title/H1/meta
 description/body text) is included at the bottom, unused by the MVP.
@@ -94,6 +95,13 @@ def partial_similarity_score(old: NormalizedUrl, new: NormalizedUrl) -> float:
     return 0.40 * slug_ratio + 0.20 * parent_ratio + 0.15 * depth_sim + 0.25 * token_overlap
 
 
+def _find_homepage(new_norms: list[NormalizedUrl]) -> NormalizedUrl | None:
+    for n in new_norms:
+        if n.normalized_path == "/":
+            return n
+    return None
+
+
 def _build_indexes(new_norms: list[NormalizedUrl]):
     path_index: dict[str, int] = {}
     slug_index: dict[str, list[int]] = {}
@@ -144,7 +152,7 @@ def _explain(match_type: str, confidence: float, old: NormalizedUrl, best_new: N
         return f"The meaningful words in the path are very similar ({confidence:.0f}% similarity), even though the path structure differs."
     if match_type == MATCH_TYPE_PARTIAL_SIMILARITY:
         return f"Some words and folder structure are similar ({confidence:.0f}% composite score), but this match is not certain."
-    return "No page on the new site shares enough words or path structure with this URL to suggest a confident match."
+    return "No page on the new site shares enough words or path structure with this URL, so it defaults to the homepage."
 
 
 def match_single_url(
@@ -203,38 +211,33 @@ def match_single_url(
         alternatives = _candidates_to_alternatives(scored[1:], new_norms)
         result = MatchResult(old_url=old_url, old_path=old_path, best=best, alternatives=alternatives)
         result.explanation = _explain(best_type, best.confidence, old_norm, best_n)
-        result.include_default = best.confidence >= AUTO_INCLUDE_MIN_CONFIDENCE
-        result.status_default = STATUS_APPROVED if result.include_default else STATUS_NEEDS_REVIEW
+        result.include_default = True
+        result.status_default = STATUS_APPROVED if best.confidence >= AUTO_INCLUDE_MIN_CONFIDENCE else STATUS_NEEDS_REVIEW
         return result
 
     # --- Layers 3 & 4: fuzzy token / partial similarity ---
     scored = _fuzzy_candidates(old_norm, new_norms, token_index, allow_brute_force=len(new_norms) <= BRUTE_FORCE_FALLBACK_LIMIT)
     scored.sort(key=lambda t: t[1], reverse=True)
 
-    if not scored:
-        result = MatchResult(old_url=old_url, old_path=old_path, best=None, alternatives=[])
-        result.explanation = _explain(MATCH_TYPE_NO_MATCH, 0, old_norm, None)
-        result.include_default = False
+    if not scored or scored[0][1] < NEEDS_REVIEW_THRESHOLD:
+        # Nothing reliable was found -- fall back to the new site's homepage
+        # rather than leaving this URL unmapped.
+        home = _find_homepage(new_norms)
+        best = MatchCandidate(
+            new_url=home.original_url if home else "",
+            new_path="/",
+            confidence=0.0,
+            match_type=MATCH_TYPE_NO_MATCH,
+        )
+        alternatives = _candidates_to_alternatives(scored, new_norms)
+        result = MatchResult(old_url=old_url, old_path=old_path, best=best, alternatives=alternatives)
+        result.explanation = _explain(MATCH_TYPE_NO_MATCH, 0, old_norm, home)
+        result.include_default = True
         result.status_default = STATUS_NEEDS_REVIEW
         return result
 
     best_idx, best_score, best_type = scored[0]
     best_n = new_norms[best_idx]
-
-    if best_score < NEEDS_REVIEW_THRESHOLD:
-        best = MatchCandidate(
-            new_url=best_n.original_url,
-            new_path=best_n.original_path,
-            confidence=round(best_score, 1),
-            match_type=MATCH_TYPE_NO_MATCH,
-        )
-        alternatives = _candidates_to_alternatives(scored[1:], new_norms)
-        result = MatchResult(old_url=old_url, old_path=old_path, best=best, alternatives=alternatives)
-        result.explanation = _explain(MATCH_TYPE_NO_MATCH, best.confidence, old_norm, best_n)
-        result.include_default = False
-        result.status_default = STATUS_NEEDS_REVIEW
-        return result
-
     best = MatchCandidate(
         new_url=best_n.original_url,
         new_path=best_n.original_path,
@@ -244,8 +247,8 @@ def match_single_url(
     alternatives = _candidates_to_alternatives(scored[1:], new_norms)
     result = MatchResult(old_url=old_url, old_path=old_path, best=best, alternatives=alternatives)
     result.explanation = _explain(best_type, best.confidence, old_norm, best_n)
-    result.include_default = best.confidence >= AUTO_INCLUDE_MIN_CONFIDENCE
-    result.status_default = STATUS_APPROVED if result.include_default else STATUS_NEEDS_REVIEW
+    result.include_default = True
+    result.status_default = STATUS_APPROVED if best.confidence >= AUTO_INCLUDE_MIN_CONFIDENCE else STATUS_NEEDS_REVIEW
     return result
 
 

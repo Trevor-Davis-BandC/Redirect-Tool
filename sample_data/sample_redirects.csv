@@ -1,5 +1,6 @@
-Old URL,New URL
-/old-page,/new-page
-/old-about,/about
-/services/gutter-cleaning,/gutter-cleaning
-/blog/2019/our-first-post,/blog/our-first-post
+Old Page URL,Destination Page URL, Redirect Type
+/old-page,/new-page,301
+/old-about,/about,301
+/services/gutter-cleaning,/gutter-cleaning,301
+/blog/2019/our-first-post,/blog/our-first-post,301
+/contact-old,/,302

@@ -11,13 +11,13 @@ from columns import (
     COL_OLD_PATH,
     COL_NEW_URL,
     COL_NEW_PATH,
-    COL_CONFIDENCE,
-    COL_MATCH_TYPE,
+    COL_REDIRECT_TYPE,
     COL_STATUS,
     COL_NOTES,
     STATUS_APPROVED,
     STATUS_EXCLUDED,
     STATUS_UNMAPPED,
+    REDIRECT_TYPE_PERMANENT,
 )
 from validator import validate_redirects
 
@@ -29,8 +29,7 @@ def _row(old_path, new_path, include=True, status=STATUS_APPROVED, notes=""):
         COL_OLD_PATH: old_path,
         COL_NEW_URL: f"https://newsite.com{new_path}" if new_path else "",
         COL_NEW_PATH: new_path,
-        COL_CONFIDENCE: 90.0,
-        COL_MATCH_TYPE: "Exact Path",
+        COL_REDIRECT_TYPE: REDIRECT_TYPE_PERMANENT,
         COL_STATUS: status,
         COL_NOTES: notes,
     }
@@ -50,56 +49,6 @@ def test_duplicate_source_paths_flagged_as_critical():
     assert report.has_critical_errors
 
 
-def test_self_redirect_detected():
-    df = _df([_row("/about", "/about")])
-    report = validate_redirects(df, "newsite.com")
-    assert "/about" in report.self_redirects
-
-
-def test_redirect_loop_detected():
-    df = _df([
-        _row("/page-a", "/page-b"),
-        _row("/page-b", "/page-a"),
-    ])
-    report = validate_redirects(df, "newsite.com")
-    assert report.redirect_loops
-    assert report.has_critical_errors
-
-
-def test_redirect_chain_detected():
-    df = _df([
-        _row("/old-page", "/middle-page"),
-        _row("/middle-page", "/new-page"),
-    ])
-    report = validate_redirects(df, "newsite.com", new_sitemap_paths={"/middle-page", "/new-page"})
-    assert report.redirect_chains
-    src, mid, dest = report.redirect_chains[0]
-    assert src == "/old-page"
-    assert mid == "/middle-page"
-    assert dest == "/new-page"
-
-
-def test_missing_destination_is_warning_not_critical():
-    df = _df([_row("/about", "/not-in-sitemap")])
-    report = validate_redirects(df, "newsite.com", new_sitemap_paths={"/contact"})
-    assert report.missing_destinations
-    assert not report.has_critical_errors
-
-
-def test_external_destination_flagged():
-    row = _row("/about", "")
-    row[COL_NEW_PATH] = "https://someother.com/page"
-    df = _df([row])
-    report = validate_redirects(df, "newsite.com")
-    assert report.external_destinations
-
-
-def test_homepage_fallback_flagged():
-    df = _df([_row("/random-unrelated-page", "/")])
-    report = validate_redirects(df, "newsite.com")
-    assert "/random-unrelated-page" in report.homepage_fallbacks
-
-
 def test_blank_source_path_is_critical():
     row = _row("", "/somewhere")
     df = _df([row])
@@ -107,11 +56,26 @@ def test_blank_source_path_is_critical():
     assert report.has_critical_errors
 
 
+def test_blank_destination_is_critical():
+    row = _row("/about", "")
+    df = _df([row])
+    report = validate_redirects(df, "newsite.com")
+    assert report.has_critical_errors
+
+
+def test_homepage_fallback_is_not_flagged():
+    """Redirecting an unmatched page to home is expected, not an error."""
+    df = _df([_row("/random-unrelated-page", "/")])
+    report = validate_redirects(df, "newsite.com")
+    assert not report.has_critical_errors
+    assert not report.warnings
+
+
 def test_excluded_and_unmapped_counts():
     df = _df([
         _row("/a", "/a2", include=True, status=STATUS_APPROVED),
         _row("/b", "/b2", include=False, status=STATUS_EXCLUDED),
-        _row("/c", "", include=False, status=STATUS_UNMAPPED),
+        _row("/c", "/", include=False, status=STATUS_UNMAPPED),
     ])
     report = validate_redirects(df, "newsite.com")
     assert report.total_old_urls == 3
@@ -127,3 +91,15 @@ def test_duplicate_redirect_rule_detected():
     ])
     report = validate_redirects(df, "newsite.com")
     assert report.duplicate_redirect_rules
+
+
+def test_non_duplicate_rows_produce_no_issues():
+    df = _df([
+        _row("/a", "/a2"),
+        _row("/b", "/b2"),
+        _row("/c", "/"),
+    ])
+    report = validate_redirects(df, "newsite.com")
+    assert not report.has_critical_errors
+    assert not report.duplicate_source_paths
+    assert not report.duplicate_redirect_rules

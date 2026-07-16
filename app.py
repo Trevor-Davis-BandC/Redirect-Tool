@@ -16,16 +16,16 @@ from columns import (
     COL_OLD_PATH,
     COL_NEW_URL,
     COL_NEW_PATH,
-    COL_CONFIDENCE,
-    COL_MATCH_TYPE,
+    COL_REDIRECT_TYPE,
     COL_STATUS,
     COL_NOTES,
     ALL_COLUMNS,
     STATUS_APPROVED,
-    STATUS_NEEDS_REVIEW,
-    STATUS_EXCLUDED,
     STATUS_UNMAPPED,
     ALL_STATUSES,
+    REDIRECT_TYPE_PERMANENT,
+    REDIRECT_TYPE_TEMPORARY,
+    REDIRECT_TYPE_OPTIONS,
 )
 from sitemap import discover_and_parse_sitemap
 from matcher import generate_redirect_suggestions, MATCH_TYPE_NO_MATCH
@@ -62,6 +62,16 @@ PAGE_LABELS = {
 }
 
 
+def _default_redirect_type(old_path: str, new_path: str, match_type: str) -> str:
+    """301 for confident, real page-to-page matches; 302 for fallback/uncertain ones."""
+    old_norm = build_normalized_url(old_path).normalized_path
+    new_norm = build_normalized_url(new_path).normalized_path if new_path else ""
+    is_homepage_fallback = new_norm == "/" and old_norm != "/"
+    if match_type == MATCH_TYPE_NO_MATCH or is_homepage_fallback:
+        return REDIRECT_TYPE_TEMPORARY
+    return REDIRECT_TYPE_PERMANENT
+
+
 # ---------------------------------------------------------------------------
 # Session state
 # ---------------------------------------------------------------------------
@@ -79,9 +89,8 @@ def init_session_state() -> None:
         "new_sitemap_result": None,
         "redirect_df": None,
         "new_sitemap_paths": set(),
-        "alternatives_by_old_path": {},
-        "explanations_by_old_path": {},
         "export_despite_warnings": False,
+        "last_updated_path": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -292,59 +301,40 @@ def render_discovery_page() -> None:
         return
 
     st.markdown("---")
-    if st.button("Generate Redirect Suggestions", type="primary"):
-        with st.spinner("Comparing URLs and generating redirect suggestions..."):
-            results = generate_redirect_suggestions(old_result.urls, new_result.urls)
+    back_col, next_col = st.columns([1, 3])
+    with back_col:
+        if st.button("Back to New Project"):
+            st.session_state.page = PAGE_NEW_PROJECT
+            st.rerun()
+    with next_col:
+        if st.button("Generate Redirect Suggestions", type="primary"):
+            with st.spinner("Comparing URLs and generating redirect suggestions..."):
+                results = generate_redirect_suggestions(old_result.urls, new_result.urls)
 
-        rows = []
-        alternatives_by_old_path = {}
-        explanations_by_old_path = {}
-        for r in results:
-            best = r.best
-            rows.append(
-                {
-                    COL_INCLUDE: r.include_default,
-                    COL_OLD_URL: r.old_url,
-                    COL_OLD_PATH: r.old_path,
-                    COL_NEW_URL: best.new_url if best else "",
-                    COL_NEW_PATH: best.new_path if best else "",
-                    COL_CONFIDENCE: best.confidence if best else 0.0,
-                    COL_MATCH_TYPE: best.match_type if best else MATCH_TYPE_NO_MATCH,
-                    COL_STATUS: r.status_default,
-                    COL_NOTES: "",
-                }
-            )
-            alternatives_by_old_path[r.old_path] = [
-                {"new_url": a.new_url, "new_path": a.new_path, "confidence": a.confidence, "match_type": a.match_type}
-                for a in r.alternatives
-            ]
-            explanations_by_old_path[r.old_path] = r.explanation
+            rows = []
+            for r in results:
+                best = r.best
+                rows.append(
+                    {
+                        COL_INCLUDE: r.include_default,
+                        COL_OLD_URL: r.old_url,
+                        COL_OLD_PATH: r.old_path,
+                        COL_NEW_URL: best.new_url,
+                        COL_NEW_PATH: best.new_path,
+                        COL_REDIRECT_TYPE: _default_redirect_type(r.old_path, best.new_path, best.match_type),
+                        COL_STATUS: r.status_default,
+                        COL_NOTES: "",
+                    }
+                )
 
-        st.session_state.redirect_df = pd.DataFrame(rows, columns=ALL_COLUMNS)
-        st.session_state.alternatives_by_old_path = alternatives_by_old_path
-        st.session_state.explanations_by_old_path = explanations_by_old_path
-        st.session_state.page = PAGE_REVIEW
-        st.rerun()
+            st.session_state.redirect_df = pd.DataFrame(rows, columns=ALL_COLUMNS)
+            st.session_state.page = PAGE_REVIEW
+            st.rerun()
 
 
 # ---------------------------------------------------------------------------
 # Page 3: Redirect review
 # ---------------------------------------------------------------------------
-
-def _confidence_bucket(row: pd.Series) -> str:
-    match_type = row[COL_MATCH_TYPE]
-    confidence = row[COL_CONFIDENCE]
-    status = row[COL_STATUS]
-    if status == STATUS_EXCLUDED:
-        return "Excluded"
-    if match_type == MATCH_TYPE_NO_MATCH or confidence < 60:
-        return "No Match"
-    if confidence >= 95:
-        return "Exact Matches"
-    if confidence >= 80:
-        return "Strong Suggestions"
-    return "Needs Review"
-
 
 def render_review_page() -> None:
     st.header("3. Redirect Review")
@@ -357,42 +347,36 @@ def render_review_page() -> None:
             st.rerun()
         return
 
+    if st.session_state.get("last_updated_path"):
+        st.success(f"Updated the destination for '{st.session_state.last_updated_path}'.")
+        st.session_state.last_updated_path = None
+
     st.write(
-        "Review each suggested redirect. Uncheck **Include** to exclude a row, or set **Status** to "
-        "*Unmapped* for pages you're intentionally not redirecting. Edit **Suggested New Path** to "
-        "point somewhere else."
+        "Every old URL gets a destination -- pages with no clear match on the new site default to "
+        "the homepage (`/`). Edit **Suggested New Path** directly to point somewhere else, uncheck "
+        "**Include** to exclude a row, or set **Status** to *Unmapped* for pages you're intentionally "
+        "not redirecting. Only the path is ever exported -- the domain shown in *Suggested New URL* "
+        "(including any staging/preview domain) is for your reference only."
     )
 
-    filter_options = ["All", "Exact Matches", "Strong Suggestions", "Needs Review", "No Match", "Excluded"]
-    status_filter = st.radio("Filter by category", filter_options, horizontal=True)
+    status_options = ["All"] + ALL_STATUSES
+    status_filter = st.radio("Filter by status", status_options, horizontal=True)
 
-    col_a, col_b, col_c = st.columns([1, 1, 1])
+    col_a, col_b = st.columns(2)
     with col_a:
-        conf_range = st.slider("Confidence range", 0, 100, (0, 100))
-    with col_b:
         search_old = st.text_input("Search old URLs contains")
-    with col_c:
+    with col_b:
         search_new = st.text_input("Search new URLs contains")
 
-    sort_desc = st.checkbox("Sort by confidence (highest first)", value=True)
-
     display_df = df.copy()
-    display_df["_bucket"] = display_df.apply(_confidence_bucket, axis=1)
 
     if status_filter != "All":
-        display_df = display_df[display_df["_bucket"] == status_filter]
-
-    display_df = display_df[
-        (display_df[COL_CONFIDENCE] >= conf_range[0]) & (display_df[COL_CONFIDENCE] <= conf_range[1])
-    ]
+        display_df = display_df[display_df[COL_STATUS] == status_filter]
 
     if search_old.strip():
         display_df = display_df[display_df[COL_OLD_URL].str.contains(search_old.strip(), case=False, na=False)]
     if search_new.strip():
         display_df = display_df[display_df[COL_NEW_URL].str.contains(search_new.strip(), case=False, na=False)]
-
-    display_df = display_df.sort_values(COL_CONFIDENCE, ascending=not sort_desc)
-    display_df = display_df.drop(columns=["_bucket"])
 
     st.caption(f"Showing {len(display_df)} of {len(df)} redirects.")
 
@@ -408,8 +392,7 @@ def render_review_page() -> None:
             COL_OLD_PATH: st.column_config.TextColumn("Old Path", disabled=True),
             COL_NEW_URL: st.column_config.TextColumn("Suggested New URL"),
             COL_NEW_PATH: st.column_config.TextColumn("Suggested New Path"),
-            COL_CONFIDENCE: st.column_config.NumberColumn("Confidence Score", disabled=True, format="%.1f"),
-            COL_MATCH_TYPE: st.column_config.TextColumn("Match Type", disabled=True),
+            COL_REDIRECT_TYPE: st.column_config.SelectboxColumn("Redirect Type", options=REDIRECT_TYPE_OPTIONS),
             COL_STATUS: st.column_config.SelectboxColumn("Status", options=ALL_STATUSES),
             COL_NOTES: st.column_config.TextColumn("Notes"),
         },
@@ -425,53 +408,45 @@ def render_review_page() -> None:
         df = st.session_state.redirect_df
 
     st.markdown("---")
-    st.subheader("Inspect a redirect / view alternative matches")
-
+    st.subheader("Change a specific redirect's destination")
+    st.caption(
+        "You can also edit the Suggested New Path cell directly in the table above -- use this if that's "
+        "easier, e.g. for pointing a page somewhere other than the suggestion or the homepage fallback."
+    )
     old_paths = list(df[COL_OLD_PATH])
     if old_paths:
-        selected_path = st.selectbox("Old path", old_paths)
-        current_row = df[df[COL_OLD_PATH] == selected_path].iloc[0]
-        explanation = st.session_state.explanations_by_old_path.get(selected_path, "")
-        st.write(f"**Current suggestion:** {current_row[COL_NEW_PATH] or '(none)'}")
-        st.write(f"**Why this match was chosen:** {explanation}")
-
-        alternatives = st.session_state.alternatives_by_old_path.get(selected_path, [])
-        if alternatives:
-            st.write("**Alternative destinations found on the new site:**")
-            for i, alt in enumerate(alternatives):
-                alt_col1, alt_col2 = st.columns([4, 1])
-                with alt_col1:
-                    st.write(f"{alt['new_path']} — {alt['confidence']}% ({alt['match_type']})")
-                with alt_col2:
-                    if st.button("Use this", key=f"use_alt_{i}_{selected_path}"):
-                        idx = df.index[df[COL_OLD_PATH] == selected_path][0]
-                        st.session_state.redirect_df.loc[idx, COL_NEW_URL] = alt["new_url"]
-                        st.session_state.redirect_df.loc[idx, COL_NEW_PATH] = alt["new_path"]
-                        st.session_state.redirect_df.loc[idx, COL_CONFIDENCE] = alt["confidence"]
-                        st.session_state.redirect_df.loc[idx, COL_MATCH_TYPE] = alt["match_type"]
-                        st.session_state.redirect_df.loc[idx, COL_STATUS] = STATUS_NEEDS_REVIEW
-                        st.session_state.redirect_df.loc[idx, COL_INCLUDE] = True
-                        st.rerun()
-        else:
-            st.caption("No alternative matches were found for this URL.")
-
-        with st.form("custom_destination_form"):
-            custom_dest = st.text_input("Enter a custom destination path")
-            custom_submit = st.form_submit_button("Set custom destination")
-        if custom_submit and custom_dest.strip():
+        pick_col, dest_col, button_col = st.columns([2, 2, 1])
+        with pick_col:
+            selected_path = st.selectbox("Old path", old_paths, key="change_dest_old_path")
+        current_dest = df.loc[df[COL_OLD_PATH] == selected_path, COL_NEW_PATH].iloc[0]
+        with dest_col:
+            new_dest = st.text_input("New destination path", value=current_dest, key="change_dest_new_path")
+        with button_col:
+            st.write("")
+            st.write("")
+            update_clicked = st.button("Update")
+        if update_clicked and new_dest.strip():
             idx = df.index[df[COL_OLD_PATH] == selected_path][0]
+            st.session_state.redirect_df.loc[idx, COL_NEW_PATH] = new_dest.strip()
             st.session_state.redirect_df.loc[idx, COL_NEW_URL] = ""
-            st.session_state.redirect_df.loc[idx, COL_NEW_PATH] = custom_dest.strip()
-            st.session_state.redirect_df.loc[idx, COL_MATCH_TYPE] = "Manual / Custom"
-            st.session_state.redirect_df.loc[idx, COL_CONFIDENCE] = 100.0
+            st.session_state.redirect_df.loc[idx, COL_REDIRECT_TYPE] = _default_redirect_type(
+                selected_path, new_dest.strip(), "Manual / Custom"
+            )
             st.session_state.redirect_df.loc[idx, COL_STATUS] = STATUS_APPROVED
             st.session_state.redirect_df.loc[idx, COL_INCLUDE] = True
+            st.session_state.last_updated_path = selected_path
             st.rerun()
 
     st.markdown("---")
-    if st.button("Continue to Validation and Export", type="primary"):
-        st.session_state.page = PAGE_EXPORT
-        st.rerun()
+    back_col, next_col = st.columns([1, 3])
+    with back_col:
+        if st.button("Back to Sitemap Discovery"):
+            st.session_state.page = PAGE_DISCOVERY
+            st.rerun()
+    with next_col:
+        if st.button("Continue to Validation and Export", type="primary"):
+            st.session_state.page = PAGE_EXPORT
+            st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -488,6 +463,10 @@ def render_export_page() -> None:
             st.session_state.page = PAGE_DISCOVERY
             st.rerun()
         return
+
+    if st.button("Back to Redirect Review"):
+        st.session_state.page = PAGE_REVIEW
+        st.rerun()
 
     report = validate_redirects(df, st.session_state.new_domain, st.session_state.new_sitemap_paths)
 
@@ -510,25 +489,7 @@ def render_export_page() -> None:
         "Duplicate redirect rules",
         [f"{s} -> {d}" for s, d in report.duplicate_redirect_rules],
     )
-    _list_section(
-        "Missing destination URLs (not found in new sitemap)",
-        [f"{s} -> {d}" for s, d in report.missing_destinations],
-    )
-    _list_section("Possible redirect loops", [" -> ".join(chain) for chain in report.redirect_loops])
-    _list_section(
-        "Redirect chains",
-        [f"{a} -> {b} -> {c}" for a, b, c in report.redirect_chains],
-    )
-    _list_section("Self-redirects", report.self_redirects)
-    _list_section(
-        "External destination URLs",
-        [f"{s} -> {d}" for s, d in report.external_destinations],
-    )
-    _list_section("Homepage fallback redirects", report.homepage_fallbacks)
-    _list_section(
-        "Destinations used unusually often",
-        [f"{d} ({c} times)" for d, c in report.overused_destinations],
-    )
+    _list_section("Blank or missing destinations", report.blank_or_malformed)
 
     st.markdown("---")
 
@@ -565,7 +526,7 @@ def render_export_page() -> None:
         else:
             guess = guess_column_mapping(headers)
             st.write("Map your template's columns:")
-            m1, m2 = st.columns(2)
+            m1, m2, m3 = st.columns(3)
             with m1:
                 source_col = st.selectbox(
                     "Source/old URL column", headers, index=headers.index(guess["source"]) if guess["source"] in headers else 0
@@ -576,14 +537,22 @@ def render_export_page() -> None:
                     headers,
                     index=headers.index(guess["destination"]) if guess["destination"] in headers else min(1, len(headers) - 1),
                 )
+            with m3:
+                type_options = ["(none)"] + headers
+                type_default = guess["redirect_type"] if guess["redirect_type"] in headers else "(none)"
+                type_col_choice = st.selectbox(
+                    "Redirect type column (optional)", type_options, index=type_options.index(type_default)
+                )
+            redirect_type_col = None if type_col_choice == "(none)" else type_col_choice
 
+            exclude_cols = {source_col, dest_col} | ({redirect_type_col} if redirect_type_col else set())
             default_values = {}
             if len(template_df) > 0:
                 first_row = template_df.iloc[0].to_dict()
-                default_values = {k: v for k, v in first_row.items() if k not in (source_col, dest_col)}
+                default_values = {k: v for k, v in first_row.items() if k not in exclude_cols}
 
             if can_export:
-                csv_text = export_with_template(df, headers, source_col, dest_col, default_values)
+                csv_text = export_with_template(df, headers, source_col, dest_col, redirect_type_col, default_values)
     else:
         if can_export:
             csv_text = export_default_csv(df)

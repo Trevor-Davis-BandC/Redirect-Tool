@@ -1,0 +1,4 @@
+Old Page URL,Destination Page URL, Redirect Type
+/our-work,/work,301
+/about-us,/about,301
+/contact,/,302
