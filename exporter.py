@@ -5,6 +5,10 @@ three columns -- Old Page URL, Destination Page URL, and Redirect Type (301
 or 302) -- with paths only, never a domain. An optional Duda-provided
 template CSV can also be uploaded, whose headers, column order, and extra
 required columns are preserved.
+
+Duda's importer only accepts MAX_REDIRECTS_PER_CSV rows per file, so the
+`_chunks` variants of the export functions split larger redirect lists into
+multiple CSV files.
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ from columns import (
     STATUS_UNMAPPED,
     REDIRECT_TYPE_PERMANENT,
 )
+from config import MAX_REDIRECTS_PER_CSV
 
 # Exact header text expected by Duda's bulk redirect import template. Note
 # the leading space before "Redirect Type" -- that's how Duda's own template
@@ -68,11 +73,36 @@ def _clean_redirect_type(value: str) -> str:
     return value if value in ("301", "302") else REDIRECT_TYPE_PERMANENT
 
 
-def build_export_filename(project_name: str, extension: str = "csv") -> str:
+def build_export_filename(
+    project_name: str,
+    extension: str = "csv",
+    part: int | None = None,
+    total_parts: int | None = None,
+) -> str:
     safe_name = re.sub(r"[^A-Za-z0-9_-]+", "-", (project_name or "redirect-tool").strip()).strip("-")
     safe_name = safe_name or "redirect-tool"
     today = date.today().isoformat()
+    if part is not None and total_parts is not None and total_parts > 1:
+        return f"{safe_name}-redirects-{today}-part{part}-of-{total_parts}.{extension}"
     return f"{safe_name}-redirects-{today}.{extension}"
+
+
+def chunk_rows(rows: list[dict], chunk_size: int = MAX_REDIRECTS_PER_CSV) -> list[list[dict]]:
+    """Split a list of export rows into chunks of at most `chunk_size` rows.
+
+    Always returns at least one (possibly empty) chunk, so callers can
+    build a CSV even when there's nothing to export.
+    """
+    if not rows:
+        return [[]]
+    return [rows[i : i + chunk_size] for i in range(0, len(rows), chunk_size)]
+
+
+def _csv_text_from_rows(rows: list[dict], columns: list[str]) -> str:
+    out_df = pd.DataFrame(rows, columns=columns)
+    buf = io.StringIO()
+    out_df.to_csv(buf, index=False)
+    return buf.getvalue()
 
 
 def build_default_export_rows(df: pd.DataFrame) -> list[dict]:
@@ -113,13 +143,21 @@ def build_default_export_rows(df: pd.DataFrame) -> list[dict]:
 
 
 def export_default_csv(df: pd.DataFrame) -> str:
-    """Return CSV text (UTF-8, quoted as needed) matching Duda's import template."""
+    """Return CSV text (UTF-8, quoted as needed) matching Duda's import template.
+
+    Contains every exportable row in one file, ignoring Duda's per-file
+    row limit -- use `export_default_csv_chunks` when that limit matters.
+    """
     rows = build_default_export_rows(df)
     columns = [DEFAULT_OLD_COLUMN, DEFAULT_NEW_COLUMN, DEFAULT_REDIRECT_TYPE_COLUMN]
-    out_df = pd.DataFrame(rows, columns=columns)
-    buf = io.StringIO()
-    out_df.to_csv(buf, index=False)
-    return buf.getvalue()
+    return _csv_text_from_rows(rows, columns)
+
+
+def export_default_csv_chunks(df: pd.DataFrame, chunk_size: int = MAX_REDIRECTS_PER_CSV) -> list[str]:
+    """Return one or more CSV texts, each with at most `chunk_size` rows."""
+    rows = build_default_export_rows(df)
+    columns = [DEFAULT_OLD_COLUMN, DEFAULT_NEW_COLUMN, DEFAULT_REDIRECT_TYPE_COLUMN]
+    return [_csv_text_from_rows(chunk, columns) for chunk in chunk_rows(rows, chunk_size)]
 
 
 def guess_column_mapping(headers: list[str]) -> dict[str, str | None]:
@@ -148,23 +186,15 @@ def read_template_headers(file_obj) -> tuple[list[str], pd.DataFrame]:
     return list(df.columns), df
 
 
-def export_with_template(
-    df: pd.DataFrame,
+def _map_rows_to_template(
+    rows: list[dict],
     template_headers: list[str],
     source_column: str,
     destination_column: str,
-    redirect_type_column: str | None = None,
-    default_values: dict[str, str] | None = None,
-) -> str:
-    """Build CSV text matching a Duda template's headers and column order.
-
-    Unmapped columns are filled from `default_values` (typically taken from
-    an example row in the uploaded template) or left blank; they are never
-    derived from the redirect data.
-    """
+    redirect_type_column: str | None,
+    default_values: dict[str, str] | None,
+) -> list[dict]:
     default_values = default_values or {}
-    rows = build_default_export_rows(df)
-
     out_rows = []
     for r in rows:
         out_row = {}
@@ -178,8 +208,43 @@ def export_with_template(
             else:
                 out_row[header] = default_values.get(header, "")
         out_rows.append(out_row)
+    return out_rows
 
-    out_df = pd.DataFrame(out_rows, columns=template_headers)
-    buf = io.StringIO()
-    out_df.to_csv(buf, index=False)
-    return buf.getvalue()
+
+def export_with_template(
+    df: pd.DataFrame,
+    template_headers: list[str],
+    source_column: str,
+    destination_column: str,
+    redirect_type_column: str | None = None,
+    default_values: dict[str, str] | None = None,
+) -> str:
+    """Build CSV text matching a Duda template's headers and column order.
+
+    Unmapped columns are filled from `default_values` (typically taken from
+    an example row in the uploaded template) or left blank; they are never
+    derived from the redirect data. Contains every exportable row in one
+    file -- use `export_with_template_chunks` when Duda's per-file row
+    limit matters.
+    """
+    rows = build_default_export_rows(df)
+    out_rows = _map_rows_to_template(rows, template_headers, source_column, destination_column, redirect_type_column, default_values)
+    return _csv_text_from_rows(out_rows, template_headers)
+
+
+def export_with_template_chunks(
+    df: pd.DataFrame,
+    template_headers: list[str],
+    source_column: str,
+    destination_column: str,
+    redirect_type_column: str | None = None,
+    default_values: dict[str, str] | None = None,
+    chunk_size: int = MAX_REDIRECTS_PER_CSV,
+) -> list[str]:
+    """Return one or more CSV texts matching a Duda template, each with at most `chunk_size` rows."""
+    rows = build_default_export_rows(df)
+    csv_texts = []
+    for chunk in chunk_rows(rows, chunk_size):
+        out_rows = _map_rows_to_template(chunk, template_headers, source_column, destination_column, redirect_type_column, default_values)
+        csv_texts.append(_csv_text_from_rows(out_rows, template_headers))
+    return csv_texts

@@ -25,13 +25,17 @@ from columns import (
 )
 from exporter import (
     export_default_csv,
+    export_default_csv_chunks,
+    export_with_template,
+    export_with_template_chunks,
     build_export_filename,
     guess_column_mapping,
-    export_with_template,
+    chunk_rows,
     DEFAULT_OLD_COLUMN,
     DEFAULT_NEW_COLUMN,
     DEFAULT_REDIRECT_TYPE_COLUMN,
 )
+from config import MAX_REDIRECTS_PER_CSV
 
 
 def _row(old_path, new_path, include=True, status=STATUS_APPROVED, redirect_type=REDIRECT_TYPE_PERMANENT):
@@ -155,3 +159,81 @@ def test_export_with_template_fills_unmapped_columns_from_defaults():
     )
     parsed = pd.read_csv(io.StringIO(csv_text))
     assert parsed.iloc[0]["Notes"] == "bulk import"
+
+
+def test_chunk_rows_returns_single_chunk_when_under_limit():
+    rows = [{"a": i} for i in range(5)]
+    chunks = chunk_rows(rows, chunk_size=10)
+    assert len(chunks) == 1
+    assert chunks[0] == rows
+
+
+def test_chunk_rows_splits_evenly_and_with_remainder():
+    rows = [{"a": i} for i in range(5)]
+    chunks = chunk_rows(rows, chunk_size=2)
+    assert [len(c) for c in chunks] == [2, 2, 1]
+    assert [row["a"] for chunk in chunks for row in chunk] == list(range(5))
+
+
+def test_chunk_rows_returns_one_empty_chunk_for_no_rows():
+    assert chunk_rows([], chunk_size=200) == [[]]
+
+
+def test_default_export_chunks_single_file_when_under_limit():
+    df = pd.DataFrame([_row(f"/old-{i}", f"/new-{i}") for i in range(3)])
+    chunks = export_default_csv_chunks(df, chunk_size=200)
+    assert len(chunks) == 1
+    lines = chunks[0].strip().splitlines()
+    assert len(lines) == 1 + 3  # header + 3 rows
+
+
+def test_default_export_chunks_splits_when_over_limit():
+    df = pd.DataFrame([_row(f"/old-{i}", f"/new-{i}") for i in range(5)])
+    chunks = export_default_csv_chunks(df, chunk_size=2)
+    assert len(chunks) == 3
+    for chunk in chunks:
+        assert chunk.strip().splitlines()[0] == "Old Page URL,Destination Page URL, Redirect Type"
+    row_counts = [len(c.strip().splitlines()) - 1 for c in chunks]
+    assert row_counts == [2, 2, 1]
+
+
+def test_default_export_chunks_preserve_all_rows_across_files():
+    df = pd.DataFrame([_row(f"/old-{i}", f"/new-{i}") for i in range(7)])
+    chunks = export_default_csv_chunks(df, chunk_size=3)
+    all_old_paths = set()
+    for chunk in chunks:
+        parsed = pd.read_csv(io.StringIO(chunk))
+        all_old_paths.update(parsed[DEFAULT_OLD_COLUMN])
+    assert all_old_paths == {f"/old-{i}" for i in range(7)}
+
+
+def test_default_export_chunks_uses_configured_duda_limit_by_default():
+    df = pd.DataFrame([_row(f"/old-{i}", f"/new-{i}") for i in range(MAX_REDIRECTS_PER_CSV + 1)])
+    chunks = export_default_csv_chunks(df)
+    assert len(chunks) == 2
+    assert len(chunks[0].strip().splitlines()) - 1 == MAX_REDIRECTS_PER_CSV
+    assert len(chunks[1].strip().splitlines()) - 1 == 1
+
+
+def test_export_with_template_chunks_splits_when_over_limit():
+    df = pd.DataFrame([_row(f"/old-{i}", f"/new-{i}") for i in range(5)])
+    headers = ["Source URL", "Destination URL"]
+    chunks = export_with_template_chunks(
+        df, headers, source_column="Source URL", destination_column="Destination URL", chunk_size=2
+    )
+    assert len(chunks) == 3
+    row_counts = [len(c.strip().splitlines()) - 1 for c in chunks]
+    assert row_counts == [2, 2, 1]
+    for chunk in chunks:
+        assert chunk.strip().splitlines()[0] == "Source URL,Destination URL"
+
+
+def test_build_export_filename_includes_part_suffix_when_multiple_parts():
+    filename = build_export_filename("My Project", part=2, total_parts=3)
+    assert "part2-of-3" in filename
+    assert filename.startswith("My-Project-redirects-")
+
+
+def test_build_export_filename_omits_part_suffix_for_single_part():
+    filename = build_export_filename("My Project", part=1, total_parts=1)
+    assert "part" not in filename

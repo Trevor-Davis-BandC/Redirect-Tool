@@ -32,13 +32,14 @@ from matcher import generate_redirect_suggestions, MATCH_TYPE_NO_MATCH
 from url_normalizer import build_normalized_url
 from validator import validate_redirects
 from exporter import (
-    export_default_csv,
-    export_with_template,
+    export_default_csv_chunks,
+    export_with_template_chunks,
     build_export_filename,
     guess_column_mapping,
     read_template_headers,
 )
 from report import build_redirect_report_pdf
+from config import MAX_REDIRECTS_PER_CSV
 from project_storage import (
     build_project_dict,
     save_project_json,
@@ -539,8 +540,7 @@ def render_export_page() -> None:
 
     template_file = st.file_uploader("Optional: upload a Duda CSV template", type=["csv"])
 
-    csv_text = None
-    filename = build_export_filename(st.session_state.project_name)
+    csv_chunks = None
 
     if template_file is not None:
         try:
@@ -576,22 +576,38 @@ def render_export_page() -> None:
                 default_values = {k: v for k, v in first_row.items() if k not in exclude_cols}
 
             if can_export:
-                csv_text = export_with_template(df, headers, source_col, dest_col, redirect_type_col, default_values)
+                csv_chunks = export_with_template_chunks(
+                    df, headers, source_col, dest_col, redirect_type_col, default_values
+                )
     else:
         if can_export:
-            csv_text = export_default_csv(df)
+            csv_chunks = export_default_csv_chunks(df)
 
     if not can_export:
         st.button("Download Duda Redirect CSV", disabled=True)
         st.caption("Resolve critical issues, or check 'Export despite warnings', to enable download.")
-    elif csv_text is not None:
-        st.download_button(
-            "Download Duda Redirect CSV",
-            data=csv_text.encode("utf-8"),
-            file_name=filename,
-            mime="text/csv",
-            type="primary",
-        )
+    elif csv_chunks is not None:
+        total_parts = len(csv_chunks)
+        if total_parts > 1:
+            st.info(
+                f"Duda accepts up to {MAX_REDIRECTS_PER_CSV} redirects per CSV import, so this export "
+                f"is split into {total_parts} files -- import each one separately."
+            )
+        for i, csv_text in enumerate(csv_chunks, start=1):
+            label = "Download Duda Redirect CSV" if total_parts == 1 else f"Download Duda Redirect CSV -- Part {i} of {total_parts}"
+            filename = build_export_filename(
+                st.session_state.project_name,
+                part=i if total_parts > 1 else None,
+                total_parts=total_parts if total_parts > 1 else None,
+            )
+            st.download_button(
+                label,
+                data=csv_text.encode("utf-8"),
+                file_name=filename,
+                mime="text/csv",
+                type="primary",
+                key=f"csv_download_{i}",
+            )
 
 
 # ---------------------------------------------------------------------------

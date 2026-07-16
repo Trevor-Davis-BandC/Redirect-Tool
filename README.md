@@ -199,6 +199,12 @@ Rules applied automatically:
 - The filename includes your project name and today's date, e.g.
   `my-project-redirects-2026-07-15.csv`.
 
+**Duda only accepts 200 redirects per CSV import.** If your export has more
+than that, Redirect Tool automatically splits it into multiple files --
+`my-project-redirects-2026-07-15-part1-of-3.csv`, `-part2-of-3.csv`, and so
+on -- each with a separate download button. Import them into Duda one at a
+time. This limit is configurable via `config.MAX_REDIRECTS_PER_CSV`.
+
 You can also upload a different Duda-exported template CSV if a particular
 client/site needs different columns. Redirect Tool reads its header row,
 guesses which column is the source URL, the destination URL, and the

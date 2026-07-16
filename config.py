@@ -73,3 +73,7 @@ MAX_ALTERNATIVES = 5
 
 # Blocked network targets (SSRF guardrails).
 BLOCKED_HOSTNAMES = {"localhost"}
+
+# Duda's bulk redirect importer only accepts this many rows per CSV file.
+# Exports larger than this are split into multiple files.
+MAX_REDIRECTS_PER_CSV = 200
