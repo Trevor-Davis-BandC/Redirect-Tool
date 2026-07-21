@@ -129,3 +129,26 @@ def test_blocked_private_ip_is_rejected():
     result = sitemap.discover_and_parse_sitemap("192.168.1.5")
     assert result.urls == []
     assert result.errors
+
+
+def test_blocked_candidate_surfaces_specific_reason_not_generic_message(monkeypatch):
+    """Regression test: when a real sitemap candidate is blocked (e.g. bot
+    protection returning 403) or otherwise fails with a specific, known
+    reason, that reason must reach the caller instead of being discarded in
+    favor of a generic "No page URLs were found" message.
+    """
+    url_map = {
+        "https://example.com/robots.txt": FakeResponse(404, b"", "text/plain"),
+        "https://example.com/sitemap.xml": FakeResponse(403, b"Forbidden", "text/html", "https://example.com/sitemap.xml"),
+        "https://example.com/sitemap_index.xml": FakeResponse(404, b"", "text/plain"),
+        "https://example.com/sitemap-index.xml": FakeResponse(404, b"", "text/plain"),
+        "https://example.com/wp-sitemap.xml": FakeResponse(404, b"", "text/plain"),
+    }
+    monkeypatch.setattr(sitemap, "_fetch", make_fake_fetch(url_map))
+
+    result = sitemap.discover_and_parse_sitemap("example.com")
+
+    assert result.urls == []
+    all_messages = " ".join(result.warnings + result.errors)
+    assert "403" in all_messages
+    assert "sitemap.xml" in all_messages

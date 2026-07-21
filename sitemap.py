@@ -350,6 +350,11 @@ def discover_and_parse_sitemap(domain_or_url: str, override_sitemap_url: str | N
             result.warnings.extend(local_warnings)
             found = True
             break
+        elif local_warnings:
+            # Preserve the specific reason (HTTP status, non-XML content,
+            # parse failure, timeout, ...) instead of losing it in favor of
+            # a generic "not found" message.
+            attempt_warnings.extend(local_warnings)
         else:
             attempt_warnings.append(f"No page URLs were found at {candidate}.")
 
