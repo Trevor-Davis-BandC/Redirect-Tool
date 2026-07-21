@@ -611,11 +611,48 @@ def render_export_page() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Access gate
+# ---------------------------------------------------------------------------
+
+def check_password() -> bool:
+    """Gate the app behind a single shared password, configured via
+    st.secrets["APP_PASSWORD"]. This lets the app be deployed as a normal
+    public Streamlit Cloud app (no per-viewer account/sign-in needed) while
+    still keeping casual visitors out. If no password is configured (e.g.
+    running locally), the gate is skipped entirely.
+    """
+    try:
+        required_password = st.secrets.get("APP_PASSWORD", "")
+    except Exception:
+        # No secrets.toml at all (e.g. local/double-click use) -- skip the gate.
+        required_password = ""
+    if not required_password:
+        return True
+    if st.session_state.get("_authenticated"):
+        return True
+
+    st.title("Redirect Tool")
+    st.caption("Enter the team password to continue.")
+    with st.form("password_gate_form"):
+        entered_password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Unlock")
+    if submitted:
+        if entered_password == required_password:
+            st.session_state["_authenticated"] = True
+            st.rerun()
+        else:
+            st.error("Incorrect password.")
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def main() -> None:
     init_session_state()
+    if not check_password():
+        return
     render_sidebar()
 
     page = st.session_state.page

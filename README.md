@@ -77,6 +77,31 @@ streamlit run app.py
 Streamlit will print a local URL (typically `http://localhost:8501`) and
 should open it in your browser automatically.
 
+## Sharing with a team (free, password-protected)
+
+To let teammates use the app without installing anything, deploy it to
+[Streamlit Community Cloud](https://share.streamlit.io) (free, no per-app
+cost) as a normal **public** app -- then lock it with a shared password so
+strangers with the URL can't get in:
+
+1. Push this repo to GitHub (public or private both work).
+2. On [share.streamlit.io](https://share.streamlit.io), create a new app
+   pointing at this repo, branch `main`, main file `app.py`. Leave sharing
+   set to the default (do **not** use Streamlit's "private app" viewer-list
+   feature -- the free tier caps that at one app, and it requires each
+   viewer to sign in and link a GitHub/Google account).
+3. In the app's **Settings -> Secrets**, paste:
+   ```toml
+   APP_PASSWORD = "choose-a-shared-team-password"
+   ```
+   (see `.streamlit/secrets.toml.example` for the template).
+4. Share the app's URL and the password with your team. They open the link,
+   type the password once per session, and use the app -- no account, no
+   sign-in, no GitHub access required on their end.
+
+If `APP_PASSWORD` isn't set (the default for local/double-click use), the
+app skips the password screen entirely and behaves exactly as before.
+
 ## Running the tests
 
 ```bash
