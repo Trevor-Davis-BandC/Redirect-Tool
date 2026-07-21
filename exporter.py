@@ -79,8 +79,8 @@ def build_export_filename(
     part: int | None = None,
     total_parts: int | None = None,
 ) -> str:
-    safe_name = re.sub(r"[^A-Za-z0-9_-]+", "-", (project_name or "redirect-tool").strip()).strip("-")
-    safe_name = safe_name or "redirect-tool"
+    safe_name = re.sub(r"[^A-Za-z0-9_-]+", "-", (project_name or "threeohone").strip()).strip("-")
+    safe_name = safe_name or "threeohone"
     today = date.today().isoformat()
     if part is not None and total_parts is not None and total_parts > 1:
         return f"{safe_name}-redirects-{today}-part{part}-of-{total_parts}.{extension}"

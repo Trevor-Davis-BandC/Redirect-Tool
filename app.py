@@ -1,4 +1,4 @@
-"""Redirect Tool -- Streamlit UI.
+"""ThreeOhOne -- Streamlit UI.
 
 A local tool that compares an old site's sitemap to a new site's sitemap,
 suggests redirects, lets a support specialist review/edit them, validates
@@ -48,7 +48,7 @@ from project_storage import (
     ProjectFileError,
 )
 
-st.set_page_config(page_title="Redirect Tool", layout="wide")
+st.set_page_config(page_title="ThreeOhOne", layout="wide")
 
 PAGE_NEW_PROJECT = "new_project"
 PAGE_DISCOVERY = "discovery"
@@ -110,7 +110,7 @@ def reset_project() -> None:
 
 def render_sidebar() -> None:
     with st.sidebar:
-        st.title("Redirect Tool")
+        st.title("ThreeOhOne")
         st.caption("Old sitemap -> new sitemap -> Duda redirect CSV")
 
         st.markdown("### Workflow")
@@ -192,7 +192,7 @@ def render_sidebar() -> None:
 def render_new_project_page() -> None:
     st.header("1. New Project")
     st.write(
-        "Enter the old and new website domains. Redirect Tool will look for each site's "
+        "Enter the old and new website domains. ThreeOhOne will look for each site's "
         "XML sitemap automatically, or you can provide a direct sitemap URL."
     )
 
@@ -631,7 +631,7 @@ def check_password() -> bool:
     if st.session_state.get("_authenticated"):
         return True
 
-    st.title("Redirect Tool")
+    st.title("ThreeOhOne")
     st.caption("Enter the team password to continue.")
     with st.form("password_gate_form"):
         entered_password = st.text_input("Password", type="password")

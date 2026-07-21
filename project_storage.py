@@ -84,7 +84,7 @@ def load_project_json(raw: str | bytes) -> dict:
         raise ProjectFileError(f"This file is not valid JSON ({exc}).") from exc
 
     if not isinstance(data, dict):
-        raise ProjectFileError("This file does not contain a Redirect Tool project object.")
+        raise ProjectFileError("This file does not contain a ThreeOhOne project object.")
 
     defaults = {
         "app_version": APP_VERSION,

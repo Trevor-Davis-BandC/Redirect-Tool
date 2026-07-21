@@ -1,6 +1,6 @@
-# Redirect Tool
+# ThreeOhOne
 
-Redirect Tool is a local, browser-based tool for planning website
+ThreeOhOne is a local, browser-based tool for planning website
 migrations. It compares the XML sitemap of an old website to the sitemap of
 a new website, suggests redirects between matching pages, lets you review
 and edit those suggestions, validates the final list, and exports a CSV you
@@ -130,7 +130,7 @@ tests/                        Pytest suite + XML fixtures
 
 ## How sitemap discovery works
 
-For each domain, Redirect Tool:
+For each domain, ThreeOhOne:
 
 1. Fetches `/robots.txt` and looks for `Sitemap:` declarations.
 2. Falls back to trying, in order: `/sitemap.xml`, `/sitemap_index.xml`,
@@ -145,7 +145,7 @@ If you already know the sitemap URL (or the site doesn't publish one in a
 standard location), enter it directly in the **sitemap URL override** field
 on the New Project page -- this skips discovery and parses that URL only.
 
-Redirect Tool does **not** crawl a site to find pages; if no sitemap can
+ThreeOhOne does **not** crawl a site to find pages; if no sitemap can
 be found, it tells you so and asks for a manual URL rather than guessing.
 
 Safety limits (configurable in `config.py`):
@@ -225,13 +225,13 @@ Rules applied automatically:
   `my-project-redirects-2026-07-15.csv`.
 
 **Duda only accepts 200 redirects per CSV import.** If your export has more
-than that, Redirect Tool automatically splits it into multiple files --
+than that, ThreeOhOne automatically splits it into multiple files --
 `my-project-redirects-2026-07-15-part1-of-3.csv`, `-part2-of-3.csv`, and so
 on -- each with a separate download button. Import them into Duda one at a
 time. This limit is configurable via `config.MAX_REDIRECTS_PER_CSV`.
 
 You can also upload a different Duda-exported template CSV if a particular
-client/site needs different columns. Redirect Tool reads its header row,
+client/site needs different columns. ThreeOhOne reads its header row,
 guesses which column is the source URL, the destination URL, and the
 redirect-type column (by looking for words like "old"/"source",
 "new"/"destination", and "type"/"redirect type"), and lets you correct any

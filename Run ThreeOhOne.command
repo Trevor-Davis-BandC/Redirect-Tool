@@ -1,5 +1,5 @@
 #!/bin/bash
-# Double-click this file to launch Redirect Tool.
+# Double-click this file to launch ThreeOhOne.
 # First run sets up a private Python environment and installs dependencies;
 # later runs start almost instantly.
 
@@ -22,7 +22,7 @@ if [ -z "$PYTHON_BIN" ]; then
 fi
 
 if [ ! -d ".venv" ]; then
-    echo "Setting up Redirect Tool for the first time (this can take a minute)..."
+    echo "Setting up ThreeOhOne for the first time (this can take a minute)..."
     "$PYTHON_BIN" -m venv .venv
 fi
 
@@ -39,7 +39,7 @@ echo "Checking dependencies..."
 pip install -q --upgrade pip
 pip install -q -r requirements.txt
 
-echo "Starting Redirect Tool... your browser will open automatically."
+echo "Starting ThreeOhOne... your browser will open automatically."
 streamlit run app.py
 
-read -p "Redirect Tool has stopped. Press Enter to close this window..."
+read -p "ThreeOhOne has stopped. Press Enter to close this window..."
