@@ -152,3 +152,49 @@ def test_blocked_candidate_surfaces_specific_reason_not_generic_message(monkeypa
     all_messages = " ".join(result.warnings + result.errors)
     assert "403" in all_messages
     assert "sitemap.xml" in all_messages
+
+
+def test_unescaped_ampersand_is_recovered_not_rejected(monkeypatch):
+    """A stray unescaped "&" in a <loc> is a common real-world bug in
+    auto-generated WordPress sitemaps. The parser should recover and still
+    extract the real URLs instead of rejecting the whole file.
+    """
+    malformed_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+    <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+      <url><loc>https://example.com/about-us/</loc></url>
+      <url><loc>https://example.com/deals?a=1&b=2</loc></url>
+    </urlset>"""
+    url_map = {
+        "https://example.com/robots.txt": FakeResponse(404, b"", "text/plain"),
+        "https://example.com/sitemap.xml": FakeResponse(
+            200, malformed_xml, "application/xml", "https://example.com/sitemap.xml"
+        ),
+    }
+    monkeypatch.setattr(sitemap, "_fetch", make_fake_fetch(url_map))
+
+    result = sitemap.discover_and_parse_sitemap("example.com")
+
+    assert result.sitemap_url == "https://example.com/sitemap.xml"
+    assert len(result.urls) == 2
+    assert not result.errors
+
+
+def test_non_sitemap_response_includes_content_snippet_for_diagnosis(monkeypatch):
+    """When a candidate returns XML-ish content that isn't a real sitemap
+    (e.g. a bot-protection/WAF block page), the warning should include a
+    snippet of the actual response so the real cause is diagnosable.
+    """
+    block_page = b"<html><head><title>Attention Required! Access Denied</title></head><body>Blocked</body></html>"
+    url_map = {
+        "https://example.com/robots.txt": FakeResponse(404, b"", "text/plain"),
+        "https://example.com/sitemap.xml": FakeResponse(
+            200, block_page, "text/html", "https://example.com/sitemap.xml"
+        ),
+    }
+    monkeypatch.setattr(sitemap, "_fetch", make_fake_fetch(url_map))
+
+    result = sitemap.discover_and_parse_sitemap("example.com")
+
+    assert result.urls == []
+    all_messages = " ".join(result.warnings + result.errors)
+    assert "Attention Required" in all_messages

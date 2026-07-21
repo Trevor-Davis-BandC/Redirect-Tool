@@ -37,13 +37,18 @@ from config import (
 SITEMAP_NS = "http://www.sitemaps.org/schemas/sitemap/0.9"
 
 # A parser that disables entity resolution / network access to prevent XXE
-# and billion-laughs style attacks.
+# and billion-laughs style attacks. recover=True tolerates common real-world
+# malformation (e.g. an unescaped "&" in a URL, which is a frequent bug in
+# auto-generated WordPress sitemaps) instead of rejecting the whole file --
+# it does NOT weaken the XXE protections above, which are enforced
+# independently.
 _SAFE_XML_PARSER = etree.XMLParser(
     resolve_entities=False,
     no_network=True,
     dtd_validation=False,
     load_dtd=False,
     huge_tree=False,
+    recover=True,
 )
 
 
@@ -191,13 +196,25 @@ def _local_tag(element) -> str:
     return tag
 
 
-def _parse_sitemap_xml(body: bytes):
-    """Return (kind, entries) where kind is 'urlset' or 'sitemapindex'.
+def _content_snippet(body: bytes, limit: int = 160) -> str:
+    """A short, human-readable preview of a response body for diagnostics."""
+    text = body[:limit].decode("utf-8", errors="replace")
+    return " ".join(text.split())
 
-    entries is a list of (loc, lastmod) tuples for urlset, or a list of loc
-    strings for sitemapindex. Raises etree.XMLSyntaxError on malformed XML.
+
+def _parse_sitemap_xml(body: bytes):
+    """Return (kind, entries) where kind is 'urlset', 'sitemapindex', or
+    'unknown'. entries is a list of loc strings.
+
+    Uses a lenient/recovering parser, since real-world sitemaps (especially
+    auto-generated WordPress ones) sometimes contain minor malformation like
+    an unescaped "&" -- recovery still lets us extract the real <loc>
+    entries in that case. Raises etree.XMLSyntaxError only if recovery
+    itself fails to produce any tree at all (e.g. an empty response).
     """
     root = etree.fromstring(body, parser=_SAFE_XML_PARSER)
+    if root is None:
+        return "unknown", []
     root_tag = _local_tag(root)
 
     if root_tag == "sitemapindex":
@@ -275,7 +292,9 @@ def _crawl_sitemap(
     try:
         kind, entries = _parse_sitemap_xml(resp.content)
     except etree.XMLSyntaxError as exc:
-        warnings.append(f"{url} could not be parsed as XML ({exc}).")
+        warnings.append(
+            f"{url} could not be parsed as XML ({exc}). Response started with: {_content_snippet(resp.content)!r}"
+        )
         return
 
     files_used.append(resp.url)  # resp.url reflects the final URL after redirects
@@ -296,7 +315,10 @@ def _crawl_sitemap(
                 break
             all_urls.append(urljoin(url, loc))
     else:
-        warnings.append(f"{url} was valid XML but was not a recognized sitemap format.")
+        warnings.append(
+            f"{url} was valid XML but was not a recognized sitemap format. "
+            f"Response started with: {_content_snippet(resp.content)!r}"
+        )
 
 
 def discover_and_parse_sitemap(domain_or_url: str, override_sitemap_url: str | None = None) -> SitemapResult:
