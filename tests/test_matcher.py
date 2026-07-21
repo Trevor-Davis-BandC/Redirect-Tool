@@ -102,6 +102,28 @@ def test_homepage_matches_homepage_exactly():
     assert r.best.new_path == "/"
 
 
+def test_shared_location_suffix_does_not_override_topic_word():
+    """Regression test: two unrelated topics that happen to share a location
+    suffix (e.g. "-summerville") must not out-rank a page that actually
+    shares the topic word, just because of character-level string overlap
+    in the unrelated word ("flood" vs "smoke"). Real-world case: BVM Clean
+    Masters migration, where /tag/smoke-damage-summerville/ was matching to
+    a flood-damage post instead of the site's actual smoke-damage page.
+    """
+    old_urls = ["https://oldsite.com/tag/smoke-damage-summerville/"]
+    new_urls = [
+        "https://newsite.com/smoke-damage-restoration",
+        "https://newsite.com/2017/10/15/flood-damage-summerville",
+    ]
+
+    results = generate_redirect_suggestions(old_urls, new_urls)
+    r = _result_for(results, old_urls[0])
+
+    # Whatever the outcome (a confident match or a review-needed fallback),
+    # it must never be the topically-wrong flood-damage page.
+    assert r.best.new_path != "/2017/10/15/flood-damage-summerville"
+
+
 def test_multiple_old_urls_each_get_a_result():
     old_urls = ["https://oldsite.com/about/", "https://oldsite.com/contact/"]
     new_urls = ["https://newsite.com/about", "https://newsite.com/contact"]

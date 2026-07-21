@@ -78,12 +78,24 @@ def _depth_similarity(depth_a: int, depth_b: int) -> float:
 
 
 def token_similarity_score(old: NormalizedUrl, new: NormalizedUrl) -> float:
-    """RapidFuzz token-sort ratio over meaningful path words (0-100)."""
+    """Similarity of meaningful path words (0-100).
+
+    Blends RapidFuzz's character-level token-sort ratio with actual
+    shared-word (Jaccard) overlap. Character-only comparison can be misled
+    by coincidental substring overlap across otherwise-unrelated words --
+    e.g. "smoke-damage-summerville" and "flood-damage-summerville" share a
+    long "-damage-summerville" suffix, which inflates their character
+    similarity even though "smoke" vs "flood" is exactly the word that
+    should decide the match. Weighting real word-identity overlap more
+    heavily avoids that trap.
+    """
     old_str = " ".join(old.tokens)
     new_str = " ".join(new.tokens)
     if not old_str or not new_str:
         return 0.0
-    return float(fuzz.token_sort_ratio(old_str, new_str))
+    char_score = float(fuzz.token_sort_ratio(old_str, new_str))
+    word_overlap = _jaccard(set(old.tokens), set(new.tokens))
+    return 0.35 * char_score + 0.65 * word_overlap
 
 
 def partial_similarity_score(old: NormalizedUrl, new: NormalizedUrl) -> float:
