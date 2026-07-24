@@ -64,6 +64,35 @@ PAGE_LABELS = {
 }
 
 
+def _new_site_path_options(new_urls: list[str]) -> list[str]:
+    """Every path actually found on the new site's sitemap, for the review
+    page's new-path dropdowns. "/" is always included since the matcher
+    falls back to it even when the new sitemap has no explicit homepage entry.
+    """
+    paths = {build_normalized_url(u).original_path for u in new_urls}
+    paths.add("/")
+    return sorted(paths)
+
+
+def _new_site_path_to_url(new_urls: list[str]) -> dict[str, str]:
+    """Map each new-site path to its full (often staging/preview-domain) URL,
+    so the review page can show a live reference link for whatever path is
+    currently selected -- useful for double-checking a redirect actually
+    lands on the intended page, even though only the path is ever exported.
+    """
+    return {build_normalized_url(u).original_path: u for u in new_urls}
+
+
+def _sync_new_url_column(df: pd.DataFrame) -> pd.DataFrame:
+    """Recompute Suggested New URL from Suggested New Path so the reference
+    URL always matches the currently selected path, including after dropdown
+    edits -- rather than going stale like a value set once at generation time.
+    """
+    path_to_url = st.session_state.new_sitemap_path_to_url
+    df[COL_NEW_URL] = df[COL_NEW_PATH].map(lambda p: path_to_url.get(p, ""))
+    return df
+
+
 def _default_redirect_type(old_path: str, new_path: str, match_type: str) -> str:
     """301 for confident, real page-to-page matches; 302 for fallback/uncertain ones."""
     old_norm = build_normalized_url(old_path).normalized_path
@@ -90,6 +119,8 @@ def init_session_state() -> None:
         "new_sitemap_result": None,
         "redirect_df": None,
         "new_sitemap_paths": set(),
+        "new_sitemap_path_options": [],
+        "new_sitemap_path_to_url": {},
         "export_despite_warnings": False,
         "last_updated_path": None,
     }
@@ -180,6 +211,8 @@ def render_sidebar() -> None:
                 st.session_state.new_sitemap_paths = {
                     build_normalized_url(u).normalized_path for u in data["new_urls"]
                 }
+                st.session_state.new_sitemap_path_options = _new_site_path_options(data["new_urls"])
+                st.session_state.new_sitemap_path_to_url = _new_site_path_to_url(data["new_urls"])
                 st.session_state.page = PAGE_REVIEW
                 st.success(f"Loaded project '{data['project_name']}'.")
                 st.rerun()
@@ -255,6 +288,8 @@ def render_new_project_page() -> None:
     st.session_state.new_sitemap_paths = {
         build_normalized_url(u).normalized_path for u in new_result.urls
     }
+    st.session_state.new_sitemap_path_options = _new_site_path_options(new_result.urls)
+    st.session_state.new_sitemap_path_to_url = _new_site_path_to_url(new_result.urls)
     st.session_state.page = PAGE_DISCOVERY
     st.rerun()
 
@@ -358,10 +393,11 @@ def render_review_page() -> None:
 
     st.write(
         "Every old URL gets a destination -- pages with no clear match on the new site default to "
-        "the homepage (`/`). Edit **Suggested New Path** directly to point somewhere else, uncheck "
-        "**Include** to exclude a row, or set **Status** to *Unmapped* for pages you're intentionally "
-        "not redirecting. Only the path is ever exported -- the domain shown in *Suggested New URL* "
-        "(including any staging/preview domain) is for your reference only."
+        "the homepage (`/`). Pick **Suggested New Path** from the dropdown to point somewhere else, "
+        "uncheck **Include** to exclude a row, or set **Status** to *Unmapped* for pages you're "
+        "intentionally not redirecting. **Suggested New URL** shows where that path actually lives on "
+        "the new/staging site right now, so you can click through and double-check the redirect lands "
+        "in the right place -- only the path is ever exported, never that domain."
     )
 
     status_options = ["All"] + ALL_STATUSES
@@ -371,7 +407,7 @@ def render_review_page() -> None:
     with col_a:
         search_old = st.text_input("Search old URLs contains")
     with col_b:
-        search_new = st.text_input("Search new URLs contains")
+        search_new = st.text_input("Search new paths contains")
 
     display_df = df.copy()
 
@@ -381,7 +417,7 @@ def render_review_page() -> None:
     if search_old.strip():
         display_df = display_df[display_df[COL_OLD_URL].str.contains(search_old.strip(), case=False, na=False)]
     if search_new.strip():
-        display_df = display_df[display_df[COL_NEW_URL].str.contains(search_new.strip(), case=False, na=False)]
+        display_df = display_df[display_df[COL_NEW_PATH].str.contains(search_new.strip(), case=False, na=False)]
 
     st.caption(f"Showing {len(display_df)} of {len(df)} redirects.")
 
@@ -395,8 +431,10 @@ def render_review_page() -> None:
             COL_INCLUDE: st.column_config.CheckboxColumn("Include"),
             COL_OLD_URL: st.column_config.TextColumn("Old URL", disabled=True),
             COL_OLD_PATH: st.column_config.TextColumn("Old Path", disabled=True),
-            COL_NEW_URL: st.column_config.TextColumn("Suggested New URL"),
-            COL_NEW_PATH: st.column_config.TextColumn("Suggested New Path"),
+            COL_NEW_URL: st.column_config.LinkColumn("Suggested New URL", disabled=True),
+            COL_NEW_PATH: st.column_config.SelectboxColumn(
+                "Suggested New Path", options=st.session_state.new_sitemap_path_options
+            ),
             COL_REDIRECT_TYPE: st.column_config.SelectboxColumn("Redirect Type", options=REDIRECT_TYPE_OPTIONS),
             COL_STATUS: st.column_config.SelectboxColumn("Status", options=ALL_STATUSES),
             COL_NOTES: st.column_config.TextColumn("Notes"),
@@ -409,33 +447,39 @@ def render_review_page() -> None:
         edited_indexed = edited.set_index(COL_OLD_URL, drop=False)
         for old_url, edited_row in edited_indexed.iterrows():
             full_df.loc[old_url] = edited_row
-        st.session_state.redirect_df = full_df.reset_index(drop=True)
+        st.session_state.redirect_df = _sync_new_url_column(full_df.reset_index(drop=True))
         df = st.session_state.redirect_df
 
     st.markdown("---")
     st.subheader("Change a specific redirect's destination")
     st.caption(
-        "You can also edit the Suggested New Path cell directly in the table above -- use this if that's "
+        "You can also pick the Suggested New Path cell directly in the table above -- use this if that's "
         "easier, e.g. for pointing a page somewhere other than the suggestion or the homepage fallback."
     )
     old_paths = list(df[COL_OLD_PATH])
-    if old_paths:
+    new_path_options = st.session_state.new_sitemap_path_options
+    if old_paths and new_path_options:
         pick_col, dest_col, button_col = st.columns([2, 2, 1])
         with pick_col:
             selected_path = st.selectbox("Old path", old_paths, key="change_dest_old_path")
         current_dest = df.loc[df[COL_OLD_PATH] == selected_path, COL_NEW_PATH].iloc[0]
         with dest_col:
-            new_dest = st.text_input("New destination path", value=current_dest, key="change_dest_new_path")
+            dest_index = new_path_options.index(current_dest) if current_dest in new_path_options else 0
+            new_dest = st.selectbox(
+                "New destination path", new_path_options, index=dest_index, key="change_dest_new_path"
+            )
         with button_col:
             st.write("")
             st.write("")
             update_clicked = st.button("Update")
-        if update_clicked and new_dest.strip():
+        if update_clicked:
             idx = df.index[df[COL_OLD_PATH] == selected_path][0]
-            st.session_state.redirect_df.loc[idx, COL_NEW_PATH] = new_dest.strip()
-            st.session_state.redirect_df.loc[idx, COL_NEW_URL] = ""
+            st.session_state.redirect_df.loc[idx, COL_NEW_PATH] = new_dest
+            st.session_state.redirect_df.loc[idx, COL_NEW_URL] = st.session_state.new_sitemap_path_to_url.get(
+                new_dest, ""
+            )
             st.session_state.redirect_df.loc[idx, COL_REDIRECT_TYPE] = _default_redirect_type(
-                selected_path, new_dest.strip(), "Manual / Custom"
+                selected_path, new_dest, "Manual / Custom"
             )
             st.session_state.redirect_df.loc[idx, COL_STATUS] = STATUS_APPROVED
             st.session_state.redirect_df.loc[idx, COL_INCLUDE] = True
