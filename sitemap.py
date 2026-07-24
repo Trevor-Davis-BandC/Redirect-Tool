@@ -62,6 +62,10 @@ class SitemapResult:
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     truncated: bool = False
+    # Set by crawler.crawl_site_links() instead of sitemap discovery, when a
+    # site has no XML sitemap at all and its URLs were found by following
+    # internal links from the homepage instead. None for normal sitemap results.
+    crawled_from: str | None = None
 
     @property
     def success(self) -> bool:

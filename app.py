@@ -28,6 +28,7 @@ from columns import (
     REDIRECT_TYPE_OPTIONS,
 )
 from sitemap import discover_and_parse_sitemap
+from crawler import crawl_site_links
 from matcher import generate_redirect_suggestions, MATCH_TYPE_NO_MATCH
 from url_normalizer import build_normalized_url
 from validator import validate_redirects
@@ -91,6 +92,16 @@ def _sync_new_url_column(df: pd.DataFrame) -> pd.DataFrame:
     path_to_url = st.session_state.new_sitemap_path_to_url
     df[COL_NEW_URL] = df[COL_NEW_PATH].map(lambda p: path_to_url.get(p, ""))
     return df
+
+
+def _apply_new_site_urls(new_urls: list[str]) -> None:
+    """Refresh every piece of session state derived from the new site's URL
+    list. Called whenever that list changes -- after sitemap discovery, after
+    a link-crawl fallback, or after loading a saved project.
+    """
+    st.session_state.new_sitemap_paths = {build_normalized_url(u).normalized_path for u in new_urls}
+    st.session_state.new_sitemap_path_options = _new_site_path_options(new_urls)
+    st.session_state.new_sitemap_path_to_url = _new_site_path_to_url(new_urls)
 
 
 def _default_redirect_type(old_path: str, new_path: str, match_type: str) -> str:
@@ -208,11 +219,7 @@ def render_sidebar() -> None:
                 st.session_state.old_sitemap_override = data["old_sitemap_override"]
                 st.session_state.new_sitemap_override = data["new_sitemap_override"]
                 st.session_state.redirect_df = redirect_table_to_dataframe(data["redirect_table"])
-                st.session_state.new_sitemap_paths = {
-                    build_normalized_url(u).normalized_path for u in data["new_urls"]
-                }
-                st.session_state.new_sitemap_path_options = _new_site_path_options(data["new_urls"])
-                st.session_state.new_sitemap_path_to_url = _new_site_path_to_url(data["new_urls"])
+                _apply_new_site_urls(data["new_urls"])
                 st.session_state.page = PAGE_REVIEW
                 st.success(f"Loaded project '{data['project_name']}'.")
                 st.rerun()
@@ -285,11 +292,7 @@ def render_new_project_page() -> None:
 
     st.session_state.old_sitemap_result = old_result
     st.session_state.new_sitemap_result = new_result
-    st.session_state.new_sitemap_paths = {
-        build_normalized_url(u).normalized_path for u in new_result.urls
-    }
-    st.session_state.new_sitemap_path_options = _new_site_path_options(new_result.urls)
-    st.session_state.new_sitemap_path_to_url = _new_site_path_to_url(new_result.urls)
+    _apply_new_site_urls(new_result.urls)
     st.session_state.page = PAGE_DISCOVERY
     st.rerun()
 
@@ -312,11 +315,17 @@ def render_discovery_page() -> None:
         return
 
     col1, col2 = st.columns(2)
-    for col, label, result in ((col1, "Old website", old_result), (col2, "New website", new_result)):
+    sides = (
+        (col1, "Old website", old_result, "old", st.session_state.old_domain),
+        (col2, "New website", new_result, "new", st.session_state.new_domain),
+    )
+    for col, label, result, side, domain in sides:
         with col:
             st.subheader(label)
             if result.sitemap_url:
                 st.write(f"**Sitemap found:** {result.sitemap_url}")
+            elif result.crawled_from:
+                st.write(f"**No sitemap -- pages found by crawling from:** {result.crawled_from}")
             else:
                 st.write("**Sitemap found:** none")
             st.metric("Pages found", len(result.urls))
@@ -327,6 +336,20 @@ def render_discovery_page() -> None:
             if result.warnings:
                 for warn in result.warnings:
                     st.warning(warn)
+            if not result.urls and domain:
+                st.caption(
+                    "No sitemap was found. As a fallback, ThreeOhOne can crawl the site's actual "
+                    "pages by following internal links from the homepage, the way Screaming Frog does."
+                )
+                if st.button("Crawl the site's links instead", key=f"crawl_{side}"):
+                    with st.spinner(f"Crawling {domain} for internal links..."):
+                        crawl_result = crawl_site_links(domain)
+                    if side == "old":
+                        st.session_state.old_sitemap_result = crawl_result
+                    else:
+                        st.session_state.new_sitemap_result = crawl_result
+                        _apply_new_site_urls(crawl_result.urls)
+                    st.rerun()
 
     can_continue = bool(old_result.urls) and bool(new_result.urls)
 

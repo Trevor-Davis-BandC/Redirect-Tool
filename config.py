@@ -22,6 +22,21 @@ SITEMAP_CANDIDATE_PATHS = [
 
 ROBOTS_TXT_PATH = "/robots.txt"
 
+# --- Link-crawl fallback (used when a site has no discoverable XML sitemap) ---
+# Capped much lower than MAX_URLS_PER_SITE since each crawled page costs a
+# real HTTP request against someone's live site, unlike sitemap URLs which
+# are just strings read from one file.
+MAX_CRAWL_PAGES = 300
+
+# Links to these file types are not followed/counted as pages when crawling.
+CRAWL_SKIP_EXTENSIONS = (
+    ".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp", ".ico", ".bmp",
+    ".css", ".js", ".json", ".xml", ".txt", ".csv",
+    ".pdf", ".zip", ".rar", ".7z",
+    ".mp3", ".mp4", ".mov", ".avi", ".wav",
+    ".woff", ".woff2", ".ttf", ".eot", ".otf",
+)
+
 # --- Matching thresholds ---
 EXACT_PATH_CONFIDENCE = 100
 EXACT_SLUG_CONFIDENCE_MAX = 96
