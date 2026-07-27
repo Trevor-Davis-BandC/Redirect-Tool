@@ -66,6 +66,9 @@ class SitemapResult:
     # site has no XML sitemap at all and its URLs were found by following
     # internal links from the homepage instead. None for normal sitemap results.
     crawled_from: str | None = None
+    # Set by parse_uploaded_sitemap() when the sitemap came from a manually
+    # uploaded file instead of being fetched over HTTP. None otherwise.
+    uploaded_filename: str | None = None
 
     @property
     def success(self) -> bool:
@@ -252,6 +255,58 @@ def _parse_sitemap_xml(body: bytes):
     return "unknown", []
 
 
+def _process_sitemap_content(
+    body: bytes,
+    source_url: str,
+    session: requests.Session,
+    depth: int,
+    visited: set[str],
+    all_urls: list[str],
+    files_used: list[str],
+    warnings: list[str],
+    errors: list[str],
+) -> None:
+    """Parse already-obtained sitemap XML bytes and recurse into any nested
+    sitemaps. Shared by _crawl_sitemap (network fetch) and
+    parse_uploaded_sitemap (local file upload) so both paths handle
+    sitemapindex nesting, malformed XML, and unrecognized formats identically.
+    """
+    if not _looks_like_xml("", body):
+        warnings.append(f"{source_url} did not look like an XML sitemap and was skipped.")
+        return
+
+    try:
+        kind, entries = _parse_sitemap_xml(body)
+    except etree.XMLSyntaxError as exc:
+        warnings.append(
+            f"{source_url} could not be parsed as XML ({exc}). Response started with: {_content_snippet(body)!r}"
+        )
+        return
+
+    files_used.append(source_url)
+
+    if kind == "sitemapindex":
+        for child_loc in entries:
+            if len(files_used) >= MAX_SITEMAP_FILES:
+                warnings.append("Reached the maximum number of sitemap files; some sitemaps may not have been read.")
+                break
+            resolved = urljoin(source_url, child_loc)
+            _crawl_sitemap(resolved, session, depth + 1, visited, all_urls, files_used, warnings, errors)
+            if len(all_urls) >= MAX_URLS_PER_SITE:
+                break
+    elif kind == "urlset":
+        for loc in entries:
+            if len(all_urls) >= MAX_URLS_PER_SITE:
+                warnings.append(f"Reached the maximum of {MAX_URLS_PER_SITE} URLs; additional URLs were ignored.")
+                break
+            all_urls.append(urljoin(source_url, loc))
+    else:
+        warnings.append(
+            f"{source_url} was valid XML but was not a recognized sitemap format. "
+            f"Response started with: {_content_snippet(body)!r}"
+        )
+
+
 def _crawl_sitemap(
     url: str,
     session: requests.Session,
@@ -293,36 +348,8 @@ def _crawl_sitemap(
         warnings.append(f"{url} did not look like an XML sitemap and was skipped.")
         return
 
-    try:
-        kind, entries = _parse_sitemap_xml(resp.content)
-    except etree.XMLSyntaxError as exc:
-        warnings.append(
-            f"{url} could not be parsed as XML ({exc}). Response started with: {_content_snippet(resp.content)!r}"
-        )
-        return
-
-    files_used.append(resp.url)  # resp.url reflects the final URL after redirects
-
-    if kind == "sitemapindex":
-        for child_loc in entries:
-            if len(files_used) >= MAX_SITEMAP_FILES:
-                warnings.append("Reached the maximum number of sitemap files; some sitemaps may not have been read.")
-                break
-            resolved = urljoin(url, child_loc)
-            _crawl_sitemap(resolved, session, depth + 1, visited, all_urls, files_used, warnings, errors)
-            if len(all_urls) >= MAX_URLS_PER_SITE:
-                break
-    elif kind == "urlset":
-        for loc in entries:
-            if len(all_urls) >= MAX_URLS_PER_SITE:
-                warnings.append(f"Reached the maximum of {MAX_URLS_PER_SITE} URLs; additional URLs were ignored.")
-                break
-            all_urls.append(urljoin(url, loc))
-    else:
-        warnings.append(
-            f"{url} was valid XML but was not a recognized sitemap format. "
-            f"Response started with: {_content_snippet(resp.content)!r}"
-        )
+    # resp.url reflects the final URL after redirects
+    _process_sitemap_content(resp.content, resp.url, session, depth, visited, all_urls, files_used, warnings, errors)
 
 
 def discover_and_parse_sitemap(domain_or_url: str, override_sitemap_url: str | None = None) -> SitemapResult:
@@ -392,7 +419,16 @@ def discover_and_parse_sitemap(domain_or_url: str, override_sitemap_url: str | N
             )
         return result
 
-    # Deduplicate while counting duplicates removed, preserving first-seen order.
+    result.urls = _dedupe_and_truncate_urls(all_urls, result)
+    result.sitemap_files_used = files_used
+    return result
+
+
+def _dedupe_and_truncate_urls(all_urls: list[str], result: SitemapResult) -> list[str]:
+    """Deduplicate while counting duplicates removed, preserving first-seen
+    order, and enforce MAX_URLS_PER_SITE -- shared by every entry point that
+    produces a final URL list (HTTP discovery, uploaded file, ...).
+    """
     seen = set()
     deduped = []
     for u in all_urls:
@@ -407,6 +443,37 @@ def discover_and_parse_sitemap(domain_or_url: str, override_sitemap_url: str | N
         result.truncated = True
         result.warnings.append(f"Only the first {MAX_URLS_PER_SITE} URLs were kept due to the configured limit.")
 
-    result.urls = deduped
+    return deduped
+
+
+def parse_uploaded_sitemap(file_bytes: bytes, filename: str, domain_or_url: str = "") -> SitemapResult:
+    """Parse a manually uploaded sitemap XML file instead of fetching one
+    over HTTP -- useful when a site's sitemap is no longer reachable (e.g.
+    the old site has already been taken down) but a copy was saved earlier.
+
+    If the uploaded file is a sitemapindex, its child <loc> entries are
+    themselves full URLs and are still fetched over the network like any
+    other nested sitemap; only the top-level file is local.
+    """
+    result = SitemapResult(domain=domain_or_url or filename)
+    result.uploaded_filename = filename
+
+    session = requests.Session()
+    all_urls: list[str] = []
+    files_used: list[str] = []
+    visited: set[str] = set()
+
+    source_label = f"the uploaded file '{filename}'"
+    _process_sitemap_content(
+        file_bytes, source_label, session, 0, visited, all_urls, files_used, result.warnings, result.errors
+    )
+
+    if not all_urls:
+        if not result.errors:
+            result.warnings.append(f"No page URLs were found in {source_label}.")
+            result.errors.append(f"No page URLs could be found in the uploaded file '{filename}'.")
+        return result
+
+    result.urls = _dedupe_and_truncate_urls(all_urls, result)
     result.sitemap_files_used = files_used
     return result

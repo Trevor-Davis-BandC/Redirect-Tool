@@ -27,7 +27,7 @@ from columns import (
     REDIRECT_TYPE_TEMPORARY,
     REDIRECT_TYPE_OPTIONS,
 )
-from sitemap import discover_and_parse_sitemap
+from sitemap import discover_and_parse_sitemap, parse_uploaded_sitemap
 from crawler import crawl_site_links
 from matcher import generate_redirect_suggestions, MATCH_TYPE_NO_MATCH
 from url_normalizer import build_normalized_url
@@ -233,7 +233,8 @@ def render_new_project_page() -> None:
     st.header("1. New Project")
     st.write(
         "Enter the old and new website domains. ThreeOhOne will look for each site's "
-        "XML sitemap automatically, or you can provide a direct sitemap URL."
+        "XML sitemap automatically, or you can provide a direct sitemap URL -- or, for the old "
+        "site, upload a saved sitemap XML file directly (useful if the old site is no longer live)."
     )
 
     with st.form("new_project_form"):
@@ -255,6 +256,9 @@ def render_new_project_page() -> None:
         with col1:
             old_override = st.text_input(
                 "Old sitemap URL override (optional)", value=st.session_state.old_sitemap_override
+            )
+            old_sitemap_file = st.file_uploader(
+                "Or upload the old site's sitemap XML file (optional)", type=["xml"]
             )
         with col2:
             new_override = st.text_input(
@@ -285,8 +289,14 @@ def render_new_project_page() -> None:
     st.session_state.old_sitemap_override = old_override.strip()
     st.session_state.new_sitemap_override = new_override.strip()
 
-    with st.spinner("Looking for the old site's sitemap..."):
-        old_result = discover_and_parse_sitemap(old_domain.strip(), old_override.strip() or None)
+    if old_sitemap_file is not None:
+        with st.spinner("Parsing the uploaded sitemap..."):
+            old_result = parse_uploaded_sitemap(
+                old_sitemap_file.getvalue(), old_sitemap_file.name, old_domain.strip()
+            )
+    else:
+        with st.spinner("Looking for the old site's sitemap..."):
+            old_result = discover_and_parse_sitemap(old_domain.strip(), old_override.strip() or None)
     with st.spinner("Looking for the new site's sitemap..."):
         new_result = discover_and_parse_sitemap(new_domain.strip(), new_override.strip() or None)
 
@@ -326,6 +336,8 @@ def render_discovery_page() -> None:
                 st.write(f"**Sitemap found:** {result.sitemap_url}")
             elif result.crawled_from:
                 st.write(f"**No sitemap -- pages found by crawling from:** {result.crawled_from}")
+            elif result.uploaded_filename:
+                st.write(f"**Sitemap found:** uploaded file '{result.uploaded_filename}'")
             else:
                 st.write("**Sitemap found:** none")
             st.metric("Pages found", len(result.urls))

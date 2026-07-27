@@ -198,3 +198,51 @@ def test_non_sitemap_response_includes_content_snippet_for_diagnosis(monkeypatch
     assert result.urls == []
     all_messages = " ".join(result.warnings + result.errors)
     assert "Attention Required" in all_messages
+
+
+def test_uploaded_urlset_is_parsed_directly_without_any_fetch(monkeypatch):
+    """A plain urlset upload needs no network access at all -- if _fetch is
+    ever called, this test should fail loudly rather than silently pass.
+    """
+    def _unexpected_fetch(url, session):
+        raise AssertionError(f"parse_uploaded_sitemap should not fetch anything, but tried: {url}")
+
+    monkeypatch.setattr(sitemap, "_fetch", _unexpected_fetch)
+
+    result = sitemap.parse_uploaded_sitemap(_read("urlset_simple.xml"), "old-sitemap.xml", "oldsite.com")
+
+    assert result.uploaded_filename == "old-sitemap.xml"
+    assert result.sitemap_url is None
+    assert result.duplicates_removed == 1
+    assert len(result.urls) == 3
+    assert not result.errors
+
+
+def test_uploaded_sitemapindex_still_fetches_its_child_sitemaps(monkeypatch):
+    """Only the top-level file is local -- a sitemapindex's <loc> children
+    are real URLs and still need to be fetched over the network."""
+    url_map = {
+        "https://example.com/sitemap-pages.xml": FakeResponse(
+            200, _read("sitemap_pages.xml"), "application/xml", "https://example.com/sitemap-pages.xml"
+        ),
+        "https://example.com/sitemap-posts.xml": FakeResponse(
+            200, _read("sitemap_posts.xml"), "application/xml", "https://example.com/sitemap-posts.xml"
+        ),
+    }
+    monkeypatch.setattr(sitemap, "_fetch", make_fake_fetch(url_map))
+
+    result = sitemap.parse_uploaded_sitemap(_read("sitemap_index.xml"), "sitemap_index.xml")
+
+    assert result.uploaded_filename == "sitemap_index.xml"
+    assert len(result.urls) == 4
+    assert not result.errors
+
+
+def test_uploaded_file_with_no_urls_gives_friendly_error(monkeypatch):
+    monkeypatch.setattr(sitemap, "_fetch", lambda url, session: (_ for _ in ()).throw(AssertionError("no fetch expected")))
+
+    result = sitemap.parse_uploaded_sitemap(b"<html><body>Not a sitemap</body></html>", "not-a-sitemap.xml")
+
+    assert result.urls == []
+    assert result.errors
+    assert "not-a-sitemap.xml" in result.errors[0]
