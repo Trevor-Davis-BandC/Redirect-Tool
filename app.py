@@ -240,7 +240,9 @@ def render_new_project_page() -> None:
     with st.form("new_project_form"):
         project_name = st.text_input("Project name", value=st.session_state.project_name)
         old_domain = st.text_input(
-            "Old website domain", value=st.session_state.old_domain, placeholder="oldsite.com"
+            "Old website domain (not required if you upload a sitemap XML file below)",
+            value=st.session_state.old_domain,
+            placeholder="oldsite.com",
         )
         new_domain = st.text_input(
             "New website domain (or Duda preview-domain URL)",
@@ -273,8 +275,8 @@ def render_new_project_page() -> None:
     errors = []
     if not project_name.strip():
         errors.append("Project name is required.")
-    if not old_domain.strip():
-        errors.append("The old website domain is required.")
+    if not old_domain.strip() and old_sitemap_file is None:
+        errors.append("The old website domain is required, unless you upload a sitemap XML file.")
     if not new_domain.strip():
         errors.append("The new website domain is required.")
 
