@@ -23,6 +23,7 @@ from urllib.parse import urljoin, urlsplit
 import requests
 from lxml import etree
 
+from url_normalizer import normalize_path
 from config import (
     MAX_SITEMAP_FILES,
     MAX_URLS_PER_SITE,
@@ -428,14 +429,22 @@ def _dedupe_and_truncate_urls(all_urls: list[str], result: SitemapResult) -> lis
     """Deduplicate while counting duplicates removed, preserving first-seen
     order, and enforce MAX_URLS_PER_SITE -- shared by every entry point that
     produces a final URL list (HTTP discovery, uploaded file, ...).
+
+    Deduplicates by normalized path, not exact URL string, since sitemaps
+    commonly list the same page many times over with only a query string
+    differing (e.g. a quoting widget's "?catsvc=<id>" parameter) -- those are
+    the same destination for redirect purposes, and the redirect table only
+    ever exports the path, never the query string, so keeping every variant
+    as a separate row is just noise for whoever reviews it.
     """
     seen = set()
     deduped = []
     for u in all_urls:
-        if u in seen:
+        key = normalize_path(urlsplit(u).path)
+        if key in seen:
             result.duplicates_removed += 1
             continue
-        seen.add(u)
+        seen.add(key)
         deduped.append(u)
 
     if len(deduped) > MAX_URLS_PER_SITE:

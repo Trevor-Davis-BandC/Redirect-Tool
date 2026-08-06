@@ -51,6 +51,34 @@ def test_urlset_simple_and_duplicate_removal(monkeypatch):
     assert not result.errors
 
 
+def test_query_string_variants_of_the_same_page_are_deduped(monkeypatch):
+    """Regression test: a quoting widget or similar dynamic page often
+    appears in a sitemap many times over with only a query string differing
+    (e.g. "?catsvc=7102005|7109679" vs "?catsvc=7102005|7109684"). Since only
+    the path is ever exported, these are the same destination for redirect
+    purposes and should collapse to one row, not one per query variant.
+    """
+    xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+    <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+      <url><loc>https://example.com/quote</loc></url>
+      <url><loc>https://example.com/quote?catsvc=7102005|7109679</loc></url>
+      <url><loc>https://example.com/quote?catsvc=7102005|7109684</loc></url>
+      <url><loc>https://example.com/quote?svc=[GEODIRECTIONLINK]</loc></url>
+      <url><loc>https://example.com/about-us</loc></url>
+    </urlset>"""
+    url_map = {
+        "https://example.com/robots.txt": FakeResponse(404, b"", "text/plain"),
+        "https://example.com/sitemap.xml": FakeResponse(200, xml, "application/xml", "https://example.com/sitemap.xml"),
+    }
+    monkeypatch.setattr(sitemap, "_fetch", make_fake_fetch(url_map))
+
+    result = sitemap.discover_and_parse_sitemap("example.com")
+
+    assert len(result.urls) == 2
+    assert result.duplicates_removed == 3
+    assert not result.errors
+
+
 def test_sitemap_index_with_nested_sitemaps(monkeypatch):
     url_map = {
         "https://example.com/robots.txt": FakeResponse(404, b"", "text/plain"),
