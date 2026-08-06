@@ -133,7 +133,8 @@ def init_session_state() -> None:
         "new_sitemap_path_options": [],
         "new_sitemap_path_to_url": {},
         "export_despite_warnings": False,
-        "last_updated_path": None,
+        "bulk_selected_paths": [],
+        "last_bulk_update_count": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -424,9 +425,10 @@ def render_review_page() -> None:
             st.rerun()
         return
 
-    if st.session_state.get("last_updated_path"):
-        st.success(f"Updated the destination for '{st.session_state.last_updated_path}'.")
-        st.session_state.last_updated_path = None
+    if st.session_state.get("last_bulk_update_count"):
+        count = st.session_state.last_bulk_update_count
+        st.success(f"Updated {count} redirect{'s' if count != 1 else ''}.")
+        st.session_state.last_bulk_update_count = None
 
     st.write(
         "Every old URL gets a destination -- pages with no clear match on the new site default to "
@@ -488,40 +490,69 @@ def render_review_page() -> None:
         df = st.session_state.redirect_df
 
     st.markdown("---")
-    st.subheader("Change a specific redirect's destination")
+    st.subheader("Bulk update redirects")
     st.caption(
-        "You can also pick the Suggested New Path cell directly in the table above -- use this if that's "
-        "easier, e.g. for pointing a page somewhere other than the suggestion or the homepage fallback."
+        "Filter the table above (by status or search), then use \"Select all filtered rows\" to bulk-pick "
+        "them here -- or search and pick individual old paths directly below. Useful for pointing a batch "
+        "of unmatched pages at the same destination, or mass-correcting the redirect type."
     )
-    old_paths = list(df[COL_OLD_PATH])
+
     new_path_options = st.session_state.new_sitemap_path_options
-    if old_paths and new_path_options:
-        pick_col, dest_col, button_col = st.columns([2, 2, 1])
-        with pick_col:
-            selected_path = st.selectbox("Old path", old_paths, key="change_dest_old_path")
-        current_dest = df.loc[df[COL_OLD_PATH] == selected_path, COL_NEW_PATH].iloc[0]
-        with dest_col:
-            dest_index = new_path_options.index(current_dest) if current_dest in new_path_options else 0
-            new_dest = st.selectbox(
-                "New destination path", new_path_options, index=dest_index, key="change_dest_new_path"
+    all_old_paths = list(df[COL_OLD_PATH])
+
+    if st.button(f"Select all {len(display_df)} filtered rows above"):
+        st.session_state.bulk_selected_paths = list(display_df[COL_OLD_PATH])
+        st.rerun()
+
+    selected_paths = st.multiselect("Old paths to bulk-update", all_old_paths, key="bulk_selected_paths")
+
+    if selected_paths and new_path_options:
+        set_col, type_col, button_col = st.columns([2, 1, 1])
+        with set_col:
+            set_path = st.checkbox("Set destination path", key="bulk_set_path_toggle")
+            bulk_new_path = st.selectbox(
+                "New destination path",
+                new_path_options,
+                key="bulk_new_path",
+                disabled=not set_path,
+                label_visibility="collapsed",
+            )
+        with type_col:
+            set_type = st.checkbox("Set redirect type", key="bulk_set_type_toggle")
+            bulk_redirect_type = st.selectbox(
+                "Redirect type",
+                REDIRECT_TYPE_OPTIONS,
+                key="bulk_redirect_type",
+                disabled=not set_type,
+                label_visibility="collapsed",
             )
         with button_col:
             st.write("")
-            st.write("")
-            update_clicked = st.button("Update")
-        if update_clicked:
-            idx = df.index[df[COL_OLD_PATH] == selected_path][0]
-            st.session_state.redirect_df.loc[idx, COL_NEW_PATH] = new_dest
-            st.session_state.redirect_df.loc[idx, COL_NEW_URL] = st.session_state.new_sitemap_path_to_url.get(
-                new_dest, ""
-            )
-            st.session_state.redirect_df.loc[idx, COL_REDIRECT_TYPE] = _default_redirect_type(
-                selected_path, new_dest, "Manual / Custom"
-            )
-            st.session_state.redirect_df.loc[idx, COL_STATUS] = STATUS_APPROVED
-            st.session_state.redirect_df.loc[idx, COL_INCLUDE] = True
-            st.session_state.last_updated_path = selected_path
-            st.rerun()
+            apply_clicked = st.button(f"Apply to {len(selected_paths)}", type="primary")
+
+        if apply_clicked:
+            if not (set_path or set_type):
+                st.warning('Check "Set destination path" and/or "Set redirect type" before applying.')
+            else:
+                idxs = df.index[df[COL_OLD_PATH].isin(selected_paths)]
+                for idx in idxs:
+                    old_path_value = df.loc[idx, COL_OLD_PATH]
+                    if set_path:
+                        st.session_state.redirect_df.loc[idx, COL_NEW_PATH] = bulk_new_path
+                        st.session_state.redirect_df.loc[idx, COL_NEW_URL] = (
+                            st.session_state.new_sitemap_path_to_url.get(bulk_new_path, "")
+                        )
+                        if not set_type:
+                            st.session_state.redirect_df.loc[idx, COL_REDIRECT_TYPE] = _default_redirect_type(
+                                old_path_value, bulk_new_path, "Manual / Custom"
+                            )
+                    if set_type:
+                        st.session_state.redirect_df.loc[idx, COL_REDIRECT_TYPE] = bulk_redirect_type
+                    st.session_state.redirect_df.loc[idx, COL_STATUS] = STATUS_APPROVED
+                    st.session_state.redirect_df.loc[idx, COL_INCLUDE] = True
+                st.session_state.last_bulk_update_count = len(idxs)
+                st.session_state.bulk_selected_paths = []
+                st.rerun()
 
     st.markdown("---")
     back_col, next_col = st.columns([1, 3])
