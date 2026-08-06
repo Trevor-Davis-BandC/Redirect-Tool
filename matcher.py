@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 
 from rapidfuzz import fuzz
 
-from url_normalizer import NormalizedUrl, build_normalized_url
+from url_normalizer import NormalizedUrl, build_normalized_url, tokenize_path
 from config import (
     EXACT_PATH_CONFIDENCE,
     EXACT_SLUG_CONFIDENCE_MIN,
@@ -98,13 +98,37 @@ def token_similarity_score(old: NormalizedUrl, new: NormalizedUrl) -> float:
     return 0.35 * char_score + 0.65 * word_overlap
 
 
+def _slug_similarity_score(old_slug: str, new_slug: str) -> float:
+    """Similarity between two final path segments (0-100).
+
+    Blends character-level ratio with real word-identity overlap, for the
+    same reason as token_similarity_score: two slugs can share a long
+    substring (e.g. "-damage-summerville") while being about different
+    things, and weighting word-identity keeps that from dominating.
+    """
+    if not old_slug and not new_slug:
+        return 0.0
+    char_score = float(fuzz.ratio(old_slug, new_slug))
+    word_overlap = _jaccard(set(tokenize_path(old_slug)), set(tokenize_path(new_slug)))
+    return 0.5 * char_score + 0.5 * word_overlap
+
+
 def partial_similarity_score(old: NormalizedUrl, new: NormalizedUrl) -> float:
-    """Composite score blending slug, parent-folder, depth, and token overlap."""
-    slug_ratio = float(fuzz.ratio(old.final_slug, new.final_slug)) if (old.final_slug or new.final_slug) else 0.0
+    """Composite score blending slug, parent-folder, depth, and token overlap.
+
+    Slug similarity carries the most weight, since the final path segment is
+    usually the single strongest signal of what a page is about. Parent-path
+    and depth carry much less weight than they used to -- a site redesign
+    commonly flattens nested category URLs into flat ones (e.g.
+    /auto-repair/cat/engine-diagnostics-and-performance ->
+    /engine-diagnostics-performance), and that expected structural change
+    shouldn't be enough to drag down an otherwise excellent slug match.
+    """
+    slug_score = _slug_similarity_score(old.final_slug, new.final_slug)
     parent_ratio = float(fuzz.ratio(old.parent_path, new.parent_path))
     depth_sim = _depth_similarity(old.path_depth, new.path_depth)
     token_overlap = _jaccard(set(old.tokens), set(new.tokens))
-    return 0.40 * slug_ratio + 0.20 * parent_ratio + 0.15 * depth_sim + 0.25 * token_overlap
+    return 0.50 * slug_score + 0.10 * parent_ratio + 0.10 * depth_sim + 0.30 * token_overlap
 
 
 def _find_homepage(new_norms: list[NormalizedUrl]) -> NormalizedUrl | None:
