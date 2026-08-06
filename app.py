@@ -134,6 +134,7 @@ def init_session_state() -> None:
         "new_sitemap_path_to_url": {},
         "export_despite_warnings": False,
         "bulk_selected_paths": [],
+        "clear_bulk_selection": False,
         "last_bulk_update_count": None,
     }
     for key, value in defaults.items():
@@ -425,6 +426,10 @@ def render_review_page() -> None:
             st.rerun()
         return
 
+    if st.session_state.get("clear_bulk_selection"):
+        st.session_state.bulk_selected_paths = []
+        st.session_state.clear_bulk_selection = False
+
     if st.session_state.get("last_bulk_update_count"):
         count = st.session_state.last_bulk_update_count
         st.success(f"Updated {count} redirect{'s' if count != 1 else ''}.")
@@ -551,7 +556,7 @@ def render_review_page() -> None:
                     st.session_state.redirect_df.loc[idx, COL_STATUS] = STATUS_APPROVED
                     st.session_state.redirect_df.loc[idx, COL_INCLUDE] = True
                 st.session_state.last_bulk_update_count = len(idxs)
-                st.session_state.bulk_selected_paths = []
+                st.session_state.clear_bulk_selection = True
                 st.rerun()
 
     st.markdown("---")
