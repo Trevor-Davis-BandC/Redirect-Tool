@@ -66,6 +66,23 @@ STOP_WORDS = {
     "index",
     "html",
     "php",
+    # True grammatical filler words -- unlike the domain-generic words above
+    # (which carry some topical signal and are only risky when they're the
+    # *only* word left), these never carry matching signal in any context,
+    # so stripping them is always safe.
+    "our",
+    "your",
+    "my",
+    "the",
+    "a",
+    "an",
+    "and",
+    "of",
+    "for",
+    "with",
+    "in",
+    "on",
+    "to",
 }
 
 DEFAULT_INDEX_FILENAMES = {

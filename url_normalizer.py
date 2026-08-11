@@ -113,11 +113,20 @@ def normalize_url(url: str) -> str:
 
 
 def tokenize_path(path: str, remove_stopwords: bool = True) -> list[str]:
-    """Break a normalized path into meaningful lowercase word tokens."""
+    """Break a normalized path into meaningful lowercase word tokens.
+
+    If every word in the path happens to be a stop word (e.g. a page is
+    simply "/services" or "/blog" -- both stop words, since they're usually
+    noise inside a longer slug), stripping them all would leave zero tokens
+    and make that page invisible to word-overlap matching even though it's
+    an exact, obvious match for a similarly-named old page. In that case the
+    unfiltered words are kept instead -- some signal beats none.
+    """
     path = path.lower()
     # Split on path separators, hyphens, underscores, and dots
     raw = path.replace("_", "-").split("/")
-    tokens: list[str] = []
+    all_words: list[str] = []
+    filtered_words: list[str] = []
     for segment in raw:
         if not segment:
             continue
@@ -125,10 +134,12 @@ def tokenize_path(path: str, remove_stopwords: bool = True) -> list[str]:
             word = word.strip()
             if not word:
                 continue
-            if remove_stopwords and word in STOP_WORDS:
-                continue
-            tokens.append(word)
-    return tokens
+            all_words.append(word)
+            if not (remove_stopwords and word in STOP_WORDS):
+                filtered_words.append(word)
+    if remove_stopwords and not filtered_words and all_words:
+        return all_words
+    return filtered_words
 
 
 def get_final_slug(path: str) -> str:

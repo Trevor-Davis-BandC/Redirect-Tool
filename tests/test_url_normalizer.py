@@ -69,6 +69,24 @@ def test_tokenize_can_keep_stopwords():
     assert "services" in tokens
 
 
+def test_tokenize_falls_back_to_unfiltered_when_every_word_is_a_stopword():
+    """Regression test: a page that's simply "/services" (a stop word)
+    would otherwise tokenize to [], making it invisible to word-overlap
+    matching even for an exact, obvious match like "/our-services/". Some
+    signal beats none, so the unfiltered words are kept in that case.
+    """
+    assert tokenize_path("/services") == ["services"]
+    assert tokenize_path("/blog") == ["blog"]
+    # "our" is a true filler word (always stripped) and "services" is a
+    # domain-generic one (stripped only when something else survives) --
+    # here both are stop words, so filtering empties the list and the
+    # fallback keeps everything rather than losing the page's only content.
+    assert tokenize_path("/our-services") == ["our", "services"]
+    # But normal filtering still applies when a genuinely distinct word
+    # remains alongside a stop word.
+    assert tokenize_path("/roof-services") == ["roof"]
+
+
 def test_final_slug():
     assert get_final_slug("/services/gutter-cleaning/") == "gutter-cleaning"
     assert get_final_slug("/") == ""
