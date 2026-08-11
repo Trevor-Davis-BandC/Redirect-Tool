@@ -69,6 +69,22 @@ def test_report_handles_blank_project_and_domain_fields():
     assert pdf_bytes.startswith(b"%PDF")
 
 
+def test_report_handles_non_latin1_characters():
+    """Regression test: GSC/crawl-sourced URLs and notes can contain arbitrary
+    characters (e.g. Cyrillic spam paths). The core Helvetica font only
+    supports Latin-1, so unsupported characters must be swapped out rather
+    than crashing PDF generation with a FPDFUnicodeEncodingException.
+    """
+    df = pd.DataFrame([
+        _row("/про-нас", "/about-us", STATUS_APPROVED, notes="ссылка спам"),
+        _row("/日本語ページ", "", STATUS_UNMAPPED, include=False),
+    ])
+    validation = validate_redirects(df, "newsite.com")
+    pdf_bytes = build_redirect_report_pdf("Ünïcödé Prójéct 日本", "oldsite.com", "newsite.com", df, validation)
+    assert pdf_bytes.startswith(b"%PDF")
+    assert pdf_bytes.rstrip().endswith(b"%%EOF")
+
+
 def test_report_handles_many_rows_per_section():
     """Regression test: multi_cell must reset its x-position after each bullet
     line, or the cursor drifts rightward across iterations until fpdf2 raises

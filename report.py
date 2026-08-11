@@ -31,6 +31,16 @@ NAVY = (27, 44, 66)
 GRAY = (90, 90, 90)
 
 
+def _pdf_safe(text: str) -> str:
+    """Make text safe for the core Helvetica font, which only supports
+    Latin-1. Redirect data (URLs, project/domain names, GSC-sourced paths)
+    is free-form and can contain arbitrary characters -- rather than crash
+    the whole report on one unsupported character, swap it for "?" so the
+    PDF still generates.
+    """
+    return text.encode("latin-1", "replace").decode("latin-1")
+
+
 class _ReportPDF(FPDF):
     def footer(self) -> None:
         self.set_y(-12)
@@ -42,18 +52,18 @@ class _ReportPDF(FPDF):
 def _section_title(pdf: FPDF, title: str) -> None:
     pdf.set_font("Helvetica", "B", 13)
     pdf.set_text_color(*NAVY)
-    pdf.cell(0, 9, title, new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 9, _pdf_safe(title), new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(0, 0, 0)
 
 
 def _bullet_list(pdf: FPDF, items: list[str], empty_text: str) -> None:
     pdf.set_font("Helvetica", "", 9)
     if not items:
-        pdf.multi_cell(0, 5, f"- {empty_text}", new_x="LMARGIN", new_y="NEXT")
+        pdf.multi_cell(0, 5, _pdf_safe(f"- {empty_text}"), new_x="LMARGIN", new_y="NEXT")
         pdf.ln(2)
         return
     for item in items:
-        pdf.multi_cell(0, 5, f"- {item}", new_x="LMARGIN", new_y="NEXT")
+        pdf.multi_cell(0, 5, _pdf_safe(f"- {item}"), new_x="LMARGIN", new_y="NEXT")
     pdf.ln(2)
 
 
@@ -90,9 +100,9 @@ def build_redirect_report_pdf(
 
     pdf.set_font("Helvetica", "", 10)
     pdf.set_text_color(*GRAY)
-    pdf.cell(0, 6, f"Project: {project_name or '(untitled)'}", new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(0, 6, f"Old domain: {old_domain or '(not set)'}", new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(0, 6, f"New domain: {new_domain or '(not set)'}", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, _pdf_safe(f"Project: {project_name or '(untitled)'}"), new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, _pdf_safe(f"Old domain: {old_domain or '(not set)'}"), new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, _pdf_safe(f"New domain: {new_domain or '(not set)'}"), new_x="LMARGIN", new_y="NEXT")
     pdf.cell(0, 6, f"Generated: {date.today().isoformat()}", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(4)
     pdf.set_text_color(0, 0, 0)

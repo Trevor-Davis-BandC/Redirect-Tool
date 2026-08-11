@@ -185,7 +185,7 @@ def render_sidebar() -> None:
             if st.button(
                 label,
                 key=f"nav_{page_key}",
-                use_container_width=True,
+                width="stretch",
                 disabled=is_current,
             ):
                 st.session_state.page = page_key
@@ -194,7 +194,7 @@ def render_sidebar() -> None:
         st.markdown("---")
         st.markdown("### Project")
 
-        if st.button("Reset Project", use_container_width=True):
+        if st.button("Reset Project", width="stretch"):
             reset_project()
             st.rerun()
 
@@ -227,7 +227,7 @@ def render_sidebar() -> None:
                 data=save_project_json(project),
                 file_name=build_export_filename(st.session_state.project_name, "json"),
                 mime="application/json",
-                use_container_width=True,
+                width="stretch",
             )
 
         uploaded_project = st.file_uploader("Upload Project JSON", type=["json"], key="project_uploader")
@@ -539,7 +539,7 @@ def render_review_page() -> None:
     edited = st.data_editor(
         display_df,
         key="redirect_editor",
-        use_container_width=True,
+        width="stretch",
         num_rows="fixed",
         hide_index=True,
         column_config={
