@@ -152,8 +152,12 @@ def init_session_state() -> None:
 
 
 def reset_project() -> None:
+    # Preserve the password-gate flag -- it's not project state, and wiping
+    # it would force the user back through the password prompt on every
+    # reset, which reads as being logged out.
     for key in list(st.session_state.keys()):
-        del st.session_state[key]
+        if key != "_authenticated":
+            del st.session_state[key]
     init_session_state()
 
 
