@@ -52,9 +52,11 @@ def build_project_dict(
     duplicates_removed_new: int,
     redirect_table: pd.DataFrame,
     validation_summary: dict[str, Any] | None = None,
+    project_mode: str = "migration",
 ) -> dict:
     return {
         "app_version": APP_VERSION,
+        "project_mode": project_mode,
         "project_name": project_name,
         "old_domain": old_domain,
         "new_domain": new_domain,
@@ -88,6 +90,7 @@ def load_project_json(raw: str | bytes) -> dict:
 
     defaults = {
         "app_version": APP_VERSION,
+        "project_mode": "migration",
         "project_name": "",
         "old_domain": "",
         "new_domain": "",

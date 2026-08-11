@@ -70,6 +70,10 @@ class SitemapResult:
     # Set by parse_uploaded_sitemap() when the sitemap came from a manually
     # uploaded file instead of being fetched over HTTP. None otherwise.
     uploaded_filename: str | None = None
+    # Set by gsc_export.parse_gsc_csv() when the URL list came from an
+    # uploaded Google Search Console (or similar tool's) CSV export instead
+    # of a sitemap. None otherwise.
+    gsc_import_filename: str | None = None
 
     @property
     def success(self) -> bool:

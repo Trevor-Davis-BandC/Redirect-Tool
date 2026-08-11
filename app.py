@@ -29,6 +29,7 @@ from columns import (
 )
 from sitemap import discover_and_parse_sitemap, parse_uploaded_sitemap
 from crawler import crawl_site_links
+from gsc_export import parse_gsc_csv
 from matcher import generate_redirect_suggestions, MATCH_TYPE_NO_MATCH
 from url_normalizer import build_normalized_url
 from validator import validate_redirects
@@ -62,6 +63,13 @@ PAGE_LABELS = {
     PAGE_DISCOVERY: "2. Sitemap Discovery",
     PAGE_REVIEW: "3. Redirect Review",
     PAGE_EXPORT: "4. Validate & Export",
+}
+
+PROJECT_MODE_MIGRATION = "migration"
+PROJECT_MODE_GSC = "gsc"
+PROJECT_MODE_OPTIONS = {
+    PROJECT_MODE_MIGRATION: "Site Migration (old site -> new site)",
+    PROJECT_MODE_GSC: "GSC 404 Cleanup (redirect a live site's 404s)",
 }
 
 
@@ -121,6 +129,7 @@ def _default_redirect_type(old_path: str, new_path: str, match_type: str) -> str
 def init_session_state() -> None:
     defaults = {
         "page": PAGE_NEW_PROJECT,
+        "project_mode": PROJECT_MODE_MIGRATION,
         "project_name": "",
         "old_domain": "",
         "new_domain": "",
@@ -199,6 +208,7 @@ def render_sidebar() -> None:
                 if st.session_state.new_sitemap_result
                 else 0,
                 redirect_table=st.session_state.redirect_df,
+                project_mode=st.session_state.project_mode,
             )
             st.download_button(
                 "Download Project JSON",
@@ -215,6 +225,7 @@ def render_sidebar() -> None:
             except ProjectFileError as exc:
                 st.error(str(exc))
             else:
+                st.session_state.project_mode = data.get("project_mode", PROJECT_MODE_MIGRATION)
                 st.session_state.project_name = data["project_name"]
                 st.session_state.old_domain = data["old_domain"]
                 st.session_state.new_domain = data["new_domain"]
@@ -233,43 +244,77 @@ def render_sidebar() -> None:
 
 def render_new_project_page() -> None:
     st.header("1. New Project")
-    st.write(
-        "Enter the old and new website domains. ThreeOhOne will look for each site's "
-        "XML sitemap automatically, or you can provide a direct sitemap URL -- or, for the old "
-        "site, upload a saved sitemap XML file directly (useful if the old site is no longer live)."
+
+    mode = st.radio(
+        "Project type",
+        list(PROJECT_MODE_OPTIONS.keys()),
+        format_func=lambda m: PROJECT_MODE_OPTIONS[m],
+        horizontal=True,
+        key="project_mode",
     )
+
+    if mode == PROJECT_MODE_MIGRATION:
+        st.write(
+            "Enter the old and new website domains. ThreeOhOne will look for each site's "
+            "XML sitemap automatically, or you can provide a direct sitemap URL -- or, for the old "
+            "site, upload a saved sitemap XML file directly (useful if the old site is no longer live)."
+        )
+    else:
+        st.write(
+            "Upload a CSV of 404'd URLs from Google Search Console's Page Indexing report (or a "
+            "similar tool's export), and ThreeOhOne will match each one against the live site's own "
+            "current sitemap to suggest where it should redirect to."
+        )
 
     with st.form("new_project_form"):
         project_name = st.text_input("Project name", value=st.session_state.project_name)
-        old_domain = st.text_input(
-            "Old website domain (not required if you upload a sitemap XML file below)",
-            value=st.session_state.old_domain,
-            placeholder="oldsite.com",
-        )
-        new_domain = st.text_input(
-            "New website domain (or Duda preview-domain URL)",
-            value=st.session_state.new_domain,
-            placeholder="newsite.com or https://12345.dudapreview.com",
-        )
 
-        st.caption(
-            "Only fill in the sitemap URL overrides below if the automatic checks above fail to find "
-            "a site's sitemap."
-        )
-        col1, col2 = st.columns(2)
-        with col1:
-            old_override = st.text_input(
-                "Old sitemap URL override (optional)", value=st.session_state.old_sitemap_override
+        gsc_csv_file = None
+        if mode == PROJECT_MODE_MIGRATION:
+            old_domain = st.text_input(
+                "Old website domain (not required if you upload a sitemap XML file below)",
+                value=st.session_state.old_domain,
+                placeholder="oldsite.com",
             )
-            old_sitemap_file = st.file_uploader(
-                "Or upload the old site's sitemap XML file (optional)", type=["xml"]
+            new_domain = st.text_input(
+                "New website domain (or Duda preview-domain URL)",
+                value=st.session_state.new_domain,
+                placeholder="newsite.com or https://12345.dudapreview.com",
             )
-        with col2:
+
+            st.caption(
+                "Only fill in the sitemap URL overrides below if the automatic checks above fail to find "
+                "a site's sitemap."
+            )
+            col1, col2 = st.columns(2)
+            with col1:
+                old_override = st.text_input(
+                    "Old sitemap URL override (optional)", value=st.session_state.old_sitemap_override
+                )
+                old_sitemap_file = st.file_uploader(
+                    "Or upload the old site's sitemap XML file (optional)", type=["xml"]
+                )
+            with col2:
+                new_override = st.text_input(
+                    "New sitemap URL override (optional)", value=st.session_state.new_sitemap_override
+                )
+        else:
+            new_domain = st.text_input(
+                "Site domain",
+                value=st.session_state.new_domain,
+                placeholder="yoursite.com",
+                help="The live site's own current sitemap becomes the pool of possible redirect targets.",
+            )
             new_override = st.text_input(
-                "New sitemap URL override (optional)", value=st.session_state.new_sitemap_override
+                "Sitemap URL override (optional)", value=st.session_state.new_sitemap_override
             )
+            gsc_csv_file = st.file_uploader("GSC 404 export (CSV, required)", type=["csv"])
+            old_domain = new_domain
+            old_override = ""
+            old_sitemap_file = None
 
-        submitted = st.form_submit_button("Find Sitemaps and Compare", type="primary")
+        submit_label = "Find Sitemap and Match" if mode == PROJECT_MODE_GSC else "Find Sitemaps and Compare"
+        submitted = st.form_submit_button(submit_label, type="primary")
 
     if not submitted:
         return
@@ -277,10 +322,16 @@ def render_new_project_page() -> None:
     errors = []
     if not project_name.strip():
         errors.append("Project name is required.")
-    if not old_domain.strip() and old_sitemap_file is None:
-        errors.append("The old website domain is required, unless you upload a sitemap XML file.")
-    if not new_domain.strip():
-        errors.append("The new website domain is required.")
+    if mode == PROJECT_MODE_MIGRATION:
+        if not old_domain.strip() and old_sitemap_file is None:
+            errors.append("The old website domain is required, unless you upload a sitemap XML file.")
+        if not new_domain.strip():
+            errors.append("The new website domain is required.")
+    else:
+        if not new_domain.strip():
+            errors.append("The site domain is required.")
+        if gsc_csv_file is None:
+            errors.append("A GSC 404 CSV export is required.")
 
     if errors:
         for e in errors:
@@ -293,7 +344,10 @@ def render_new_project_page() -> None:
     st.session_state.old_sitemap_override = old_override.strip()
     st.session_state.new_sitemap_override = new_override.strip()
 
-    if old_sitemap_file is not None:
+    if mode == PROJECT_MODE_GSC:
+        with st.spinner("Parsing the GSC export..."):
+            old_result = parse_gsc_csv(gsc_csv_file.getvalue(), gsc_csv_file.name, new_domain.strip())
+    elif old_sitemap_file is not None:
         with st.spinner("Parsing the uploaded sitemap..."):
             old_result = parse_uploaded_sitemap(
                 old_sitemap_file.getvalue(), old_sitemap_file.name, old_domain.strip()
@@ -328,9 +382,12 @@ def render_discovery_page() -> None:
             st.rerun()
         return
 
+    is_gsc_mode = st.session_state.project_mode == PROJECT_MODE_GSC
+    old_label = "404 URLs (Google Search Console)" if is_gsc_mode else "Old website"
+
     col1, col2 = st.columns(2)
     sides = (
-        (col1, "Old website", old_result, "old", st.session_state.old_domain),
+        (col1, old_label, old_result, "old", st.session_state.old_domain),
         (col2, "New website", new_result, "new", st.session_state.new_domain),
     )
     for col, label, result, side, domain in sides:
@@ -340,6 +397,8 @@ def render_discovery_page() -> None:
                 st.write(f"**Sitemap found:** {result.sitemap_url}")
             elif result.crawled_from:
                 st.write(f"**No sitemap -- pages found by crawling from:** {result.crawled_from}")
+            elif result.gsc_import_filename:
+                st.write(f"**404 URLs imported from:** {result.gsc_import_filename}")
             elif result.uploaded_filename:
                 st.write(f"**Sitemap found:** uploaded file '{result.uploaded_filename}'")
             else:
@@ -352,7 +411,7 @@ def render_discovery_page() -> None:
             if result.warnings:
                 for warn in result.warnings:
                     st.warning(warn)
-            if not result.urls and domain:
+            if not result.urls and domain and not (side == "old" and is_gsc_mode):
                 st.caption(
                     "No sitemap was found. As a fallback, ThreeOhOne can crawl the site's actual "
                     "pages by following internal links from the homepage, the way Screaming Frog does."
