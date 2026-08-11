@@ -113,7 +113,15 @@ def _apply_new_site_urls(new_urls: list[str]) -> None:
 
 
 def _default_redirect_type(old_path: str, new_path: str, match_type: str) -> str:
-    """301 for confident, real page-to-page matches; 302 for fallback/uncertain ones."""
+    """301 for confident, real page-to-page matches; 302 for fallback/uncertain ones.
+
+    GSC 404 Cleanup projects are always 301: every row is already a confirmed
+    404 that GSC flagged, so there's no "uncertain match" case to hedge with
+    a 302 -- it's a permanent redirect (often to home) that gets revalidated
+    in GSC afterward.
+    """
+    if st.session_state.get("project_mode") == PROJECT_MODE_GSC:
+        return REDIRECT_TYPE_PERMANENT
     old_norm = build_normalized_url(old_path).normalized_path
     new_norm = build_normalized_url(new_path).normalized_path if new_path else ""
     is_homepage_fallback = new_norm == "/" and old_norm != "/"
