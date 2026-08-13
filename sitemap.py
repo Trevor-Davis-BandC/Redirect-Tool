@@ -132,14 +132,14 @@ def _validate_fetchable_url(url: str) -> None:
         raise BlockedUrlError(f"Refusing to fetch a local/private network address: {url}")
 
 
-def _fetch(url: str, session: requests.Session) -> requests.Response:
+def _fetch(url: str, session: requests.Session, allow_redirects: bool = True) -> requests.Response:
     _validate_fetchable_url(url)
     headers = {"User-Agent": USER_AGENT}
     return session.get(
         url,
         headers=headers,
         timeout=REQUEST_TIMEOUT_SECONDS,
-        allow_redirects=True,
+        allow_redirects=allow_redirects,
     )
 
 
@@ -166,9 +166,22 @@ def _parse_robots_txt_for_sitemaps(text: str) -> list[str]:
     return sitemaps
 
 
-def _discover_candidate_sitemap_urls(base_url: str, session: requests.Session, warnings: list[str]) -> list[str]:
-    """Return an ordered, deduplicated list of sitemap URLs to try."""
-    candidates: list[str] = []
+def _discover_candidate_sitemap_urls(
+    base_url: str, session: requests.Session, warnings: list[str]
+) -> tuple[list[str], list[str]]:
+    """Return (robots_declared, fallback_candidates).
+
+    robots_declared are sitemaps robots.txt explicitly points to. Sites
+    commonly split content across several of these -- a pages sitemap, a
+    video sitemap, an image sitemap -- with no single one being a superset
+    of the others, so the caller should pull all of them rather than
+    stopping at the first that works.
+
+    fallback_candidates are common paths worth guessing only when robots.txt
+    didn't declare anything usable -- these are tried one at a time, stopping
+    at the first hit, since they're guesses rather than explicit declarations.
+    """
+    robots_declared: list[str] = []
 
     robots_url = urljoin(base_url + "/", ROBOTS_TXT_PATH.lstrip("/"))
     try:
@@ -177,8 +190,8 @@ def _discover_candidate_sitemap_urls(base_url: str, session: requests.Session, w
             found = _parse_robots_txt_for_sitemaps(resp.text)
             for sm in found:
                 resolved = urljoin(base_url + "/", sm)
-                if resolved not in candidates:
-                    candidates.append(resolved)
+                if resolved not in robots_declared:
+                    robots_declared.append(resolved)
         elif resp.status_code >= 400:
             warnings.append(f"robots.txt returned HTTP {resp.status_code}; falling back to common sitemap paths.")
     except BlockedUrlError as exc:
@@ -186,12 +199,65 @@ def _discover_candidate_sitemap_urls(base_url: str, session: requests.Session, w
     except requests.exceptions.RequestException as exc:
         warnings.append(_friendly_request_error(exc, robots_url))
 
+    fallback_candidates: list[str] = []
     for path in SITEMAP_CANDIDATE_PATHS:
         resolved = urljoin(base_url + "/", path.lstrip("/"))
-        if resolved not in candidates:
-            candidates.append(resolved)
+        if resolved not in robots_declared and resolved not in fallback_candidates:
+            fallback_candidates.append(resolved)
 
-    return candidates
+    return robots_declared, fallback_candidates
+
+
+_MAX_DOMAIN_REDIRECT_HOPS = 5
+
+
+def _resolve_effective_base_url(base_url: str, session: requests.Session, warnings: list[str]) -> str:
+    """Detect a whole-domain redirect (e.g. a .com registrar-forwarded to a
+    .net) by requesting the site root, and switch every subsequent sitemap
+    probe to the resolved domain.
+
+    Some domain-forwarding setups redirect every path to one fixed
+    destination instead of preserving the requested path -- without this,
+    a /robots.txt or /sitemap.xml probe against the old domain would land on
+    that fixed destination (e.g. the new site's homepage) rather than the
+    real file, and get misread as "no sitemap found."
+
+    Redirects are followed one hop at a time via the Location header (not
+    with allow_redirects=True) so a redirect can still be detected and
+    reported even if the destination itself turns out to be unreachable
+    (e.g. an invalid SSL certificate on the new domain) -- that's a much
+    more actionable warning than the generic "no sitemap found" that would
+    otherwise result.
+    """
+    current = base_url
+    original_host = urlsplit(base_url).netloc.lower().removeprefix("www.")
+
+    for _ in range(_MAX_DOMAIN_REDIRECT_HOPS):
+        try:
+            resp = _fetch(current + "/", session, allow_redirects=False)
+        except BlockedUrlError:
+            return current
+        except requests.exceptions.RequestException as exc:
+            if current != base_url:
+                warnings.append(
+                    f"{base_url} redirects to {current}, but {_friendly_request_error(exc, current)}"
+                )
+            return current
+
+        if resp.status_code in (301, 302, 303, 307, 308) and resp.headers.get("Location"):
+            location = urljoin(current + "/", resp.headers["Location"])
+            loc_parts = urlsplit(location)
+            if not loc_parts.netloc:
+                break
+            current = f"{loc_parts.scheme}://{loc_parts.netloc}"
+            continue
+        break
+
+    resolved_host = urlsplit(current).netloc.lower().removeprefix("www.")
+    if resolved_host and resolved_host != original_host:
+        warnings.append(f"{base_url} redirects to {current}; continuing sitemap discovery there.")
+        return current
+    return base_url
 
 
 def _looks_like_xml(content_type: str, body: bytes) -> bool:
@@ -381,16 +447,13 @@ def discover_and_parse_sitemap(domain_or_url: str, override_sitemap_url: str | N
     session = requests.Session()
     all_urls: list[str] = []
     files_used: list[str] = []
-    visited: set[str] = set()
-
-    if override_sitemap_url:
-        candidates = [override_sitemap_url]
-    else:
-        candidates = _discover_candidate_sitemap_urls(base_url, session, result.warnings)
-
-    found = False
+    successful_sources: list[str] = []
     attempt_warnings: list[str] = []
-    for candidate in candidates:
+
+    def _try_candidate(candidate: str) -> bool:
+        """Fetch one candidate sitemap. On success, merge its URLs/files
+        into the running totals and return True; otherwise route its
+        warning/error appropriately and return False."""
         attempt_urls: list[str] = []
         attempt_files: list[str] = []
         attempt_errors: list[str] = []
@@ -399,24 +462,45 @@ def discover_and_parse_sitemap(domain_or_url: str, override_sitemap_url: str | N
 
         if attempt_errors:
             result.errors.extend(attempt_errors)
-            continue
-
+            return False
         if attempt_urls:
-            all_urls = attempt_urls
-            files_used = attempt_files
-            result.sitemap_url = candidate
+            all_urls.extend(attempt_urls)
+            files_used.extend(attempt_files)
+            successful_sources.append(candidate)
             result.warnings.extend(local_warnings)
-            found = True
-            break
-        elif local_warnings:
+            return True
+        if local_warnings:
             # Preserve the specific reason (HTTP status, non-XML content,
             # parse failure, timeout, ...) instead of losing it in favor of
             # a generic "not found" message.
             attempt_warnings.extend(local_warnings)
         else:
             attempt_warnings.append(f"No page URLs were found at {candidate}.")
+        return False
 
-    if not found:
+    if override_sitemap_url:
+        _try_candidate(override_sitemap_url)
+    else:
+        base_url = _resolve_effective_base_url(base_url, session, result.warnings)
+        robots_declared, fallback_candidates = _discover_candidate_sitemap_urls(base_url, session, result.warnings)
+
+        if robots_declared:
+            # robots.txt explicitly lists these -- pull all of them and
+            # merge, rather than stopping at the first that works, since
+            # sites commonly split content across several sitemaps (pages,
+            # videos, images, news, ...) with none being a superset of
+            # the others.
+            for candidate in robots_declared:
+                _try_candidate(candidate)
+
+        if not successful_sources:
+            # Nothing robots.txt declared worked (or it declared nothing) --
+            # fall back to guessing common paths, stopping at the first hit.
+            for candidate in fallback_candidates:
+                if _try_candidate(candidate):
+                    break
+
+    if not successful_sources:
         if not result.errors:
             result.warnings.extend(attempt_warnings)
             result.errors.append(
@@ -424,6 +508,12 @@ def discover_and_parse_sitemap(domain_or_url: str, override_sitemap_url: str | N
             )
         return result
 
+    result.sitemap_url = successful_sources[0]
+    if len(successful_sources) > 1:
+        result.warnings.append(
+            f"Combined {len(successful_sources)} sitemaps declared in robots.txt: "
+            + ", ".join(successful_sources)
+        )
     result.urls = _dedupe_and_truncate_urls(all_urls, result)
     result.sitemap_files_used = files_used
     return result

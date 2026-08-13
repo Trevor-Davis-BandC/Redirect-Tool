@@ -4,6 +4,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
+import requests
 
 import sitemap
 
@@ -11,11 +12,13 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 class FakeResponse:
-    def __init__(self, status_code, content, content_type="application/xml", url=None):
+    def __init__(self, status_code, content, content_type="application/xml", url=None, location=None):
         self.status_code = status_code
         self.content = content
         self.text = content.decode("utf-8", errors="replace")
         self.headers = {"Content-Type": content_type}
+        if location:
+            self.headers["Location"] = location
         self.url = url or ""
 
 
@@ -24,7 +27,7 @@ def _read(name: str) -> bytes:
 
 
 def make_fake_fetch(url_map):
-    def _fake_fetch(url, session):
+    def _fake_fetch(url, session, allow_redirects=True):
         entry = url_map.get(url)
         if entry is None:
             return FakeResponse(404, b"Not Found", "text/plain", url)
@@ -263,6 +266,136 @@ def test_uploaded_sitemapindex_still_fetches_its_child_sitemaps(monkeypatch):
 
     assert result.uploaded_filename == "sitemap_index.xml"
     assert len(result.urls) == 4
+    assert not result.errors
+
+
+def test_domain_forwarding_to_a_different_domain_is_followed(monkeypatch):
+    """Regression test: a .com registrar-forwarded to a .net (signature
+    shutters.com -> signatureshutters.net was the real-world case). If the
+    forward doesn't preserve the requested path, probing /robots.txt and
+    /sitemap.xml against the OLD domain would land on the new domain's
+    homepage instead of the real files. Detecting the domain switch up
+    front and probing the resolved domain directly avoids that.
+    """
+    url_map = {
+        "https://example.com/": FakeResponse(
+            301, b"", "text/html", "https://example.com/", location="https://newsite.com"
+        ),
+        "https://newsite.com/": FakeResponse(200, b"<html></html>", "text/html", "https://newsite.com/"),
+        "https://newsite.com/robots.txt": FakeResponse(404, b"", "text/plain", "https://newsite.com/robots.txt"),
+        "https://newsite.com/sitemap.xml": FakeResponse(
+            200, _read("urlset_simple.xml"), "application/xml", "https://newsite.com/sitemap.xml"
+        ),
+    }
+    monkeypatch.setattr(sitemap, "_fetch", make_fake_fetch(url_map))
+
+    result = sitemap.discover_and_parse_sitemap("example.com")
+
+    assert result.sitemap_url == "https://newsite.com/sitemap.xml"
+    assert len(result.urls) == 3
+    assert not result.errors
+    assert any("redirects to https://newsite.com" in w for w in result.warnings)
+
+
+def test_domain_forwarding_to_unreachable_destination_reports_the_reason(monkeypatch):
+    """Regression test for the real-world case: a .com forwards to a .net,
+    but the .net's SSL certificate turns out to be broken (a hosting
+    misconfiguration during a DNS cutover, in the case that surfaced this).
+    The redirect should still be detected and reported by name, with the
+    specific reason it couldn't be followed further -- not silently dropped
+    in favor of generic "no sitemap found" noise about the OLD domain.
+    """
+    url_map = {
+        "https://example.com/": FakeResponse(
+            301, b"", "text/html", "https://example.com/", location="https://newsite.com"
+        ),
+        "https://newsite.com/": requests.exceptions.SSLError("certificate verify failed"),
+    }
+    monkeypatch.setattr(sitemap, "_fetch", make_fake_fetch(url_map))
+
+    result = sitemap.discover_and_parse_sitemap("example.com")
+
+    assert result.urls == []
+    all_messages = " ".join(result.warnings + result.errors)
+    assert "redirects to https://newsite.com" in all_messages
+    assert "certificate" in all_messages.lower()
+
+
+def test_same_domain_redirect_does_not_trigger_forwarding_warning(monkeypatch):
+    """A same-domain https upgrade or www normalization shouldn't be reported
+    as cross-domain forwarding."""
+    url_map = {
+        "https://example.com/": FakeResponse(200, b"<html></html>", "text/html", "https://example.com/"),
+        "https://example.com/robots.txt": FakeResponse(404, b"", "text/plain"),
+        "https://example.com/sitemap.xml": FakeResponse(
+            200, _read("urlset_simple.xml"), "application/xml", "https://example.com/sitemap.xml"
+        ),
+    }
+    monkeypatch.setattr(sitemap, "_fetch", make_fake_fetch(url_map))
+
+    result = sitemap.discover_and_parse_sitemap("example.com")
+
+    assert not any("redirects to" in w for w in result.warnings)
+
+
+def test_robots_txt_declaring_multiple_sitemaps_pulls_and_merges_all(monkeypatch):
+    """Regression test: robots.txt listing a video-sitemap.xml before
+    sitemap.xml previously caused discovery to stop at whichever one it
+    tried first and never look at the other -- even though robots.txt
+    explicitly declares both as valid sitemaps for the site, and one isn't
+    a superset of the other (e.g. a video sitemap vs. the main page
+    sitemap). Both should be fetched and merged.
+    """
+    robots_txt = (
+        "User-agent: *\n"
+        "Disallow: /wp-admin/\n\n"
+        "Sitemap: https://example.com/video-sitemap.xml\n"
+        "Sitemap: https://example.com/sitemap.xml\n"
+    )
+    video_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+    <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+      <url><loc>https://example.com/videos/demo</loc></url>
+    </urlset>"""
+    url_map = {
+        "https://example.com/": FakeResponse(200, b"<html></html>", "text/html", "https://example.com/"),
+        "https://example.com/robots.txt": FakeResponse(200, robots_txt.encode(), "text/plain", "https://example.com/robots.txt"),
+        "https://example.com/video-sitemap.xml": FakeResponse(
+            200, video_xml, "application/xml", "https://example.com/video-sitemap.xml"
+        ),
+        "https://example.com/sitemap.xml": FakeResponse(
+            200, _read("urlset_simple.xml"), "application/xml", "https://example.com/sitemap.xml"
+        ),
+    }
+    monkeypatch.setattr(sitemap, "_fetch", make_fake_fetch(url_map))
+
+    result = sitemap.discover_and_parse_sitemap("example.com")
+
+    assert result.sitemap_url == "https://example.com/video-sitemap.xml"
+    # 1 from video-sitemap.xml + 3 from sitemap.xml
+    assert len(result.urls) == 4
+    assert "https://example.com/videos/demo" in result.urls
+    assert not result.errors
+    assert any("Combined 2 sitemaps" in w for w in result.warnings)
+
+
+def test_robots_txt_sitemap_that_404s_falls_back_to_common_paths(monkeypatch):
+    """If every sitemap robots.txt declares turns out to be dead, fall back
+    to guessing common paths rather than giving up."""
+    robots_txt = "Sitemap: https://example.com/stale-sitemap.xml\n"
+    url_map = {
+        "https://example.com/": FakeResponse(200, b"<html></html>", "text/html", "https://example.com/"),
+        "https://example.com/robots.txt": FakeResponse(200, robots_txt.encode(), "text/plain", "https://example.com/robots.txt"),
+        "https://example.com/stale-sitemap.xml": FakeResponse(404, b"", "text/plain"),
+        "https://example.com/sitemap.xml": FakeResponse(
+            200, _read("urlset_simple.xml"), "application/xml", "https://example.com/sitemap.xml"
+        ),
+    }
+    monkeypatch.setattr(sitemap, "_fetch", make_fake_fetch(url_map))
+
+    result = sitemap.discover_and_parse_sitemap("example.com")
+
+    assert result.sitemap_url == "https://example.com/sitemap.xml"
+    assert len(result.urls) == 3
     assert not result.errors
 
 
