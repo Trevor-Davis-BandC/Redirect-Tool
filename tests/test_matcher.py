@@ -124,6 +124,46 @@ def test_shared_location_suffix_does_not_override_topic_word():
     assert r.best.new_path != "/2017/10/15/flood-damage-summerville"
 
 
+def test_concatenated_slug_matches_hyphenated_equivalent_instead_of_homepage():
+    """Regression test: BVM Travel migration, where /objectionbusters (no
+    separator) failed to match /objection-busters (hyphenated) and fell back
+    to the homepage, even though they're obviously the same page. Word-
+    overlap tokenization sees zero shared words here, since the concatenated
+    slug never gets split into "objection" + "busters" -- an exact match
+    once hyphens/underscores are stripped is now treated as a strong signal.
+    """
+    old_urls = ["https://oldsite.com/objectionbusters"]
+    new_urls = ["https://newsite.com/", "https://newsite.com/objection-busters"]
+
+    results = generate_redirect_suggestions(old_urls, new_urls)
+    r = _result_for(results, old_urls[0])
+
+    assert r.best.new_path == "/objection-busters"
+    assert r.best.match_type != MATCH_TYPE_NO_MATCH
+
+
+def test_concatenated_slug_matches_even_when_also_renested_under_a_folder():
+    """Regression test: same migration, /adultonlycruises moved from the
+    site root to /services/adult-only-cruises on the new site -- combining
+    the concatenated-vs-hyphenated issue above with a folder-depth change.
+    Neither difference alone should be enough to lose the match, since
+    site redesigns commonly both reformat slugs and reorganize into
+    category folders.
+    """
+    old_urls = ["https://oldsite.com/adultonlycruises"]
+    new_urls = [
+        "https://newsite.com/",
+        "https://newsite.com/services",
+        "https://newsite.com/services/adult-only-cruises",
+    ]
+
+    results = generate_redirect_suggestions(old_urls, new_urls)
+    r = _result_for(results, old_urls[0])
+
+    assert r.best.new_path == "/services/adult-only-cruises"
+    assert r.best.match_type != MATCH_TYPE_NO_MATCH
+
+
 def test_multiple_old_urls_each_get_a_result():
     old_urls = ["https://oldsite.com/about/", "https://oldsite.com/contact/"]
     new_urls = ["https://newsite.com/about", "https://newsite.com/contact"]

@@ -108,6 +108,22 @@ def _slug_similarity_score(old_slug: str, new_slug: str) -> float:
     """
     if not old_slug and not new_slug:
         return 0.0
+
+    stripped_old = old_slug.replace("-", "").replace("_", "")
+    stripped_new = new_slug.replace("-", "").replace("_", "")
+    if stripped_old and stripped_old == stripped_new:
+        # Same words, just concatenated on one side and hyphen/underscore
+        # -separated on the other (e.g. "objectionbusters" vs
+        # "objection-busters") -- word-overlap tokenization treats these as
+        # sharing zero words, since the concatenated side never gets split,
+        # even though it's the same page. An *exact* match once separators
+        # are stripped is an unambiguous signal, unlike merely a high fuzzy
+        # ratio on the stripped forms (which can be fooled by a shared
+        # substring the same way raw character similarity can -- see
+        # test_shared_location_suffix_does_not_override_topic_word), so
+        # this only fires on exact equality, not similarity.
+        return 100.0
+
     char_score = float(fuzz.ratio(old_slug, new_slug))
     word_overlap = _jaccard(set(tokenize_path(old_slug)), set(tokenize_path(new_slug)))
     return 0.5 * char_score + 0.5 * word_overlap
