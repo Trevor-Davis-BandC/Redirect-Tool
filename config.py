@@ -37,6 +37,23 @@ CRAWL_SKIP_EXTENSIONS = (
     ".woff", ".woff2", ".ttf", ".eot", ".otf",
 )
 
+# --- Wayback Machine fallback (used when a site is fully dead -- no live
+# sitemap and nothing left to crawl either) ---
+WAYBACK_CDX_API_URL = "https://web.archive.org/cdx/search/cdx"
+# archive.org's CDX API is often slower than a normal site fetch, and can
+# vary a lot run to run (observed 3-25s for the same query).
+WAYBACK_REQUEST_TIMEOUT_SECONDS = 45
+WAYBACK_CDX_ROW_LIMIT = 20000
+# Path prefixes that are never real pages, even when archived as text/html
+# with a 200 (e.g. probes/scanners archiving their own 404 pages).
+WAYBACK_SKIP_PATH_PREFIXES = (
+    "/.well-known/",
+    "/wp-admin/",
+    "/wp-json/",
+    "/wp-includes/",
+    "/cgi-bin/",
+)
+
 # --- Matching thresholds ---
 EXACT_PATH_CONFIDENCE = 100
 EXACT_SLUG_CONFIDENCE_MAX = 96

@@ -30,6 +30,7 @@ from columns import (
 from sitemap import discover_and_parse_sitemap, parse_uploaded_sitemap
 from crawler import crawl_site_links
 from gsc_export import parse_gsc_csv
+from wayback import fetch_wayback_urls
 from matcher import generate_redirect_suggestions, MATCH_TYPE_NO_MATCH
 from url_normalizer import build_normalized_url
 from validator import validate_redirects
@@ -409,6 +410,8 @@ def render_discovery_page() -> None:
                 st.write(f"**Sitemap found:** {result.sitemap_url}")
             elif result.crawled_from:
                 st.write(f"**No sitemap -- pages found by crawling from:** {result.crawled_from}")
+            elif result.wayback_source:
+                st.write(f"**No live site -- pages found via the Wayback Machine for:** {result.wayback_source}")
             elif result.gsc_import_filename:
                 st.write(f"**404 URLs imported from:** {result.gsc_import_filename}")
             elif result.uploaded_filename:
@@ -428,15 +431,32 @@ def render_discovery_page() -> None:
                     "No sitemap was found. As a fallback, ThreeOhOne can crawl the site's actual "
                     "pages by following internal links from the homepage, the way Screaming Frog does."
                 )
-                if st.button("Crawl the site's links instead", key=f"crawl_{side}"):
-                    with st.spinner(f"Crawling {domain} for internal links..."):
-                        crawl_result = crawl_site_links(domain)
-                    if side == "old":
-                        st.session_state.old_sitemap_result = crawl_result
-                    else:
-                        st.session_state.new_sitemap_result = crawl_result
-                        _apply_new_site_urls(crawl_result.urls)
-                    st.rerun()
+                fallback_col1, fallback_col2 = st.columns(2)
+                with fallback_col1:
+                    if st.button("Crawl the site's links instead", key=f"crawl_{side}"):
+                        with st.spinner(f"Crawling {domain} for internal links..."):
+                            crawl_result = crawl_site_links(domain)
+                        if side == "old":
+                            st.session_state.old_sitemap_result = crawl_result
+                        else:
+                            st.session_state.new_sitemap_result = crawl_result
+                            _apply_new_site_urls(crawl_result.urls)
+                        st.rerun()
+                with fallback_col2:
+                    if st.button("Check the Wayback Machine instead", key=f"wayback_{side}"):
+                        with st.spinner(f"Looking up {domain} in the Wayback Machine (this can take up to a minute)..."):
+                            wayback_result = fetch_wayback_urls(domain)
+                        if side == "old":
+                            st.session_state.old_sitemap_result = wayback_result
+                        else:
+                            st.session_state.new_sitemap_result = wayback_result
+                            _apply_new_site_urls(wayback_result.urls)
+                        st.rerun()
+                st.caption(
+                    "If the site is dead (domain expired, hosting cancelled, DNS no longer resolving), "
+                    "crawling won't work either -- the Wayback Machine can often still recover its old "
+                    "page list from archive.org's history."
+                )
 
     can_continue = bool(old_result.urls) and bool(new_result.urls)
 

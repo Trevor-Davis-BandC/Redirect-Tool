@@ -74,6 +74,10 @@ class SitemapResult:
     # uploaded Google Search Console (or similar tool's) CSV export instead
     # of a sitemap. None otherwise.
     gsc_import_filename: str | None = None
+    # Set by wayback.fetch_wayback_urls() when the URL list came from the
+    # Wayback Machine's archive instead of a live sitemap or crawl -- used
+    # when a site is fully dead. None otherwise.
+    wayback_source: str | None = None
 
     @property
     def success(self) -> bool:
