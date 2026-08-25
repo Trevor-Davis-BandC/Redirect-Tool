@@ -24,7 +24,6 @@ from columns import (
     COL_INCLUDE,
     COL_OLD_PATH,
     COL_NEW_PATH,
-    COL_REDIRECT_TYPE,
     COL_STATUS,
     STATUS_UNMAPPED,
     REDIRECT_TYPE_PERMANENT,
@@ -68,9 +67,11 @@ def _to_export_path(value: str) -> str:
     return path
 
 
-def _clean_redirect_type(value: str) -> str:
-    value = str(value or "").strip()
-    return value if value in ("301", "302") else REDIRECT_TYPE_PERMANENT
+def _clean_redirect_type() -> str:
+    """Every redirect is always 301 -- regardless of whatever's stored in the
+    row (including a stale 302 from a project saved before this policy),
+    since that value never reaches an export."""
+    return REDIRECT_TYPE_PERMANENT
 
 
 def build_export_filename(
@@ -129,7 +130,7 @@ def build_default_export_rows(df: pd.DataFrame) -> list[dict]:
             continue
         seen_sources.add(old_path)
 
-        redirect_type = _clean_redirect_type(row.get(COL_REDIRECT_TYPE, REDIRECT_TYPE_PERMANENT))
+        redirect_type = _clean_redirect_type()
 
         rows.append(
             {

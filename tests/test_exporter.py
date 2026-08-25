@@ -104,20 +104,20 @@ def test_export_escapes_commas_in_values():
     assert parsed.iloc[0][DEFAULT_OLD_COLUMN] == "/old,page"
 
 
-def test_export_preserves_redirect_type_per_row():
+def test_export_forces_everything_to_301_regardless_of_stored_value():
+    """Every redirect is always 301 -- a stale 302 from a project saved
+    before this policy (or any other stored value) must never reach an
+    export, since Duda's importer treats these as permanent moves only."""
     df = pd.DataFrame([
         _row("/old-page", "/new-page", redirect_type=REDIRECT_TYPE_PERMANENT),
         _row("/contact", "/", redirect_type=REDIRECT_TYPE_TEMPORARY),
+        _row("/garbage", "/garbage-new", redirect_type=""),
     ])
     csv_text = export_default_csv(df)
     assert "/old-page,/new-page,301" in csv_text
-    assert "/contact,/,302" in csv_text
-
-
-def test_export_falls_back_to_301_for_invalid_redirect_type():
-    df = pd.DataFrame([_row("/old-page", "/new-page", redirect_type="")])
-    csv_text = export_default_csv(df)
-    assert "/old-page,/new-page,301" in csv_text
+    assert "/contact,/,301" in csv_text
+    assert "/garbage,/garbage-new,301" in csv_text
+    assert "302" not in csv_text
 
 
 def test_filename_includes_project_name_and_date():

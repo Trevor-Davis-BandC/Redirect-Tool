@@ -14,6 +14,7 @@ from typing import Any
 
 import pandas as pd
 
+from columns import COL_REDIRECT_TYPE, REDIRECT_TYPE_PERMANENT
 from config import APP_VERSION
 
 REQUIRED_TOP_LEVEL_KEYS = [
@@ -115,4 +116,9 @@ def load_project_json(raw: str | bytes) -> dict:
 
 
 def redirect_table_to_dataframe(redirect_table: list[dict]) -> pd.DataFrame:
-    return pd.DataFrame(redirect_table)
+    df = pd.DataFrame(redirect_table)
+    if COL_REDIRECT_TYPE in df.columns:
+        # Every redirect is always 301 -- normalize a stale 302 from a
+        # project saved before this policy rather than resurrecting it.
+        df[COL_REDIRECT_TYPE] = REDIRECT_TYPE_PERMANENT
+    return df

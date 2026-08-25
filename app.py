@@ -24,14 +24,13 @@ from columns import (
     STATUS_UNMAPPED,
     ALL_STATUSES,
     REDIRECT_TYPE_PERMANENT,
-    REDIRECT_TYPE_TEMPORARY,
     REDIRECT_TYPE_OPTIONS,
 )
 from sitemap import discover_and_parse_sitemap, parse_uploaded_sitemap
 from crawler import crawl_site_links
 from gsc_export import parse_gsc_csv
 from wayback import fetch_wayback_urls
-from matcher import generate_redirect_suggestions, MATCH_TYPE_NO_MATCH
+from matcher import generate_redirect_suggestions
 from url_normalizer import build_normalized_url
 from validator import validate_redirects
 from exporter import (
@@ -111,24 +110,6 @@ def _apply_new_site_urls(new_urls: list[str]) -> None:
     st.session_state.new_sitemap_paths = {build_normalized_url(u).normalized_path for u in new_urls}
     st.session_state.new_sitemap_path_options = _new_site_path_options(new_urls)
     st.session_state.new_sitemap_path_to_url = _new_site_path_to_url(new_urls)
-
-
-def _default_redirect_type(old_path: str, new_path: str, match_type: str) -> str:
-    """301 for confident, real page-to-page matches; 302 for fallback/uncertain ones.
-
-    GSC 404 Cleanup projects are always 301: every row is already a confirmed
-    404 that GSC flagged, so there's no "uncertain match" case to hedge with
-    a 302 -- it's a permanent redirect (often to home) that gets revalidated
-    in GSC afterward.
-    """
-    if st.session_state.get("project_mode") == PROJECT_MODE_GSC:
-        return REDIRECT_TYPE_PERMANENT
-    old_norm = build_normalized_url(old_path).normalized_path
-    new_norm = build_normalized_url(new_path).normalized_path if new_path else ""
-    is_homepage_fallback = new_norm == "/" and old_norm != "/"
-    if match_type == MATCH_TYPE_NO_MATCH or is_homepage_fallback:
-        return REDIRECT_TYPE_TEMPORARY
-    return REDIRECT_TYPE_PERMANENT
 
 
 # ---------------------------------------------------------------------------
@@ -491,7 +472,7 @@ def render_discovery_page() -> None:
                         COL_OLD_PATH: r.old_path,
                         COL_NEW_URL: best.new_url,
                         COL_NEW_PATH: best.new_path,
-                        COL_REDIRECT_TYPE: _default_redirect_type(r.old_path, best.new_path, best.match_type),
+                        COL_REDIRECT_TYPE: REDIRECT_TYPE_PERMANENT,
                         COL_STATUS: r.status_default,
                         COL_NOTES: "",
                     }
@@ -632,16 +613,13 @@ def render_review_page() -> None:
             else:
                 idxs = df.index[df[COL_OLD_PATH].isin(selected_paths)]
                 for idx in idxs:
-                    old_path_value = df.loc[idx, COL_OLD_PATH]
                     if set_path:
                         st.session_state.redirect_df.loc[idx, COL_NEW_PATH] = bulk_new_path
                         st.session_state.redirect_df.loc[idx, COL_NEW_URL] = (
                             st.session_state.new_sitemap_path_to_url.get(bulk_new_path, "")
                         )
                         if not set_type:
-                            st.session_state.redirect_df.loc[idx, COL_REDIRECT_TYPE] = _default_redirect_type(
-                                old_path_value, bulk_new_path, "Manual / Custom"
-                            )
+                            st.session_state.redirect_df.loc[idx, COL_REDIRECT_TYPE] = REDIRECT_TYPE_PERMANENT
                     if set_type:
                         st.session_state.redirect_df.loc[idx, COL_REDIRECT_TYPE] = bulk_redirect_type
                     st.session_state.redirect_df.loc[idx, COL_STATUS] = STATUS_APPROVED

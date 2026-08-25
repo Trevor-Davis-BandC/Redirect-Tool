@@ -39,5 +39,11 @@ STATUS_UNMAPPED = "Unmapped"
 ALL_STATUSES = [STATUS_APPROVED, STATUS_NEEDS_REVIEW, STATUS_EXCLUDED, STATUS_UNMAPPED]
 
 REDIRECT_TYPE_PERMANENT = "301"
+# Kept for backward compatibility with saved project JSON files and existing
+# tests that exercise "an old/malformed row says 302" -- 302 is no longer a
+# selectable option or a possible output anywhere in the app; every redirect
+# is always 301. See exporter._clean_redirect_type and
+# project_storage.redirect_table_to_dataframe, which both force this
+# unconditionally regardless of what's stored.
 REDIRECT_TYPE_TEMPORARY = "302"
-REDIRECT_TYPE_OPTIONS = [REDIRECT_TYPE_PERMANENT, REDIRECT_TYPE_TEMPORARY]
+REDIRECT_TYPE_OPTIONS = [REDIRECT_TYPE_PERMANENT]
