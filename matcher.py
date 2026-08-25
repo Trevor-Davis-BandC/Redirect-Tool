@@ -42,6 +42,19 @@ MATCH_TYPE_EXACT_SLUG = "Exact Slug"
 MATCH_TYPE_TOKEN_SIMILARITY = "Token Similarity"
 MATCH_TYPE_PARTIAL_SIMILARITY = "Partial Path Similarity"
 MATCH_TYPE_NO_MATCH = "No Reliable Match"
+MATCH_TYPE_WILDCARD_PATTERN = "Wildcard Pattern"
+
+
+def _is_wildcard_pattern(path: str) -> bool:
+    """GSC (and similar tools) can flag pattern-style entries alongside real
+    crawled URLs -- e.g. "/wp-*.php" or "/wp-content/themes/Divi-child/*" --
+    which aren't real page paths at all, just something still being flagged
+    as a 404. These always redirect straight to home rather than being run
+    through fuzzy matching, which could otherwise coincidentally score some
+    unrelated real page above the review threshold on a site where a token
+    like "themes" or "uploads" happens to appear in an actual page slug.
+    """
+    return "*" in path
 
 
 @dataclass
@@ -204,6 +217,11 @@ def _explain(match_type: str, confidence: float, old: NormalizedUrl, best_new: N
         return f"The meaningful words in the path are very similar ({confidence:.0f}% similarity), even though the path structure differs."
     if match_type == MATCH_TYPE_PARTIAL_SIMILARITY:
         return f"Some words and folder structure are similar ({confidence:.0f}% composite score), but this match is not certain."
+    if match_type == MATCH_TYPE_WILDCARD_PATTERN:
+        return (
+            f"'{old.original_path}' is a wildcard/pattern entry, not a real page -- "
+            "it's redirected to the homepage to be revalidated in GSC."
+        )
     return "No page on the new site shares enough words or path structure with this URL, so it defaults to the homepage."
 
 
@@ -216,6 +234,21 @@ def match_single_url(
 ) -> MatchResult:
     old_url = old_norm.original_url
     old_path = old_norm.original_path
+
+    # --- Layer 0: wildcard/pattern entries always go straight to home ---
+    if _is_wildcard_pattern(old_path):
+        home = _find_homepage(new_norms)
+        best = MatchCandidate(
+            new_url=home.original_url if home else "",
+            new_path="/",
+            confidence=100.0,
+            match_type=MATCH_TYPE_WILDCARD_PATTERN,
+        )
+        result = MatchResult(old_url=old_url, old_path=old_path, best=best, alternatives=[])
+        result.explanation = _explain(MATCH_TYPE_WILDCARD_PATTERN, best.confidence, old_norm, home)
+        result.include_default = True
+        result.status_default = STATUS_APPROVED
+        return result
 
     # --- Layer 1: exact normalized path ---
     if old_norm.normalized_path in path_index:
