@@ -22,6 +22,7 @@ from columns import (
     ALL_COLUMNS,
     STATUS_APPROVED,
     STATUS_UNMAPPED,
+    STATUS_EXCLUDED,
     ALL_STATUSES,
     REDIRECT_TYPE_PERMANENT,
     REDIRECT_TYPE_OPTIONS,
@@ -571,7 +572,9 @@ def render_review_page() -> None:
     st.caption(
         "Filter the table above (by status or search), then use \"Select all filtered rows\" to bulk-pick "
         "them here -- or search and pick individual old paths directly below. Useful for pointing a batch "
-        "of unmatched pages at the same destination, or mass-correcting the redirect type."
+        "of unmatched pages at the same destination, mass-correcting the redirect type, or excluding a "
+        "whole batch (e.g. every old URL headed to a section that's moving to its own subdomain) from the "
+        "export without unchecking each row by hand."
     )
 
     new_path_options = st.session_state.new_sitemap_path_options
@@ -627,6 +630,20 @@ def render_review_page() -> None:
                 st.session_state.last_bulk_update_count = len(idxs)
                 st.session_state.clear_bulk_selection = True
                 st.rerun()
+
+        st.caption(
+            "Or remove this whole selection from the export in one click (e.g. everything headed to a "
+            "section moving to its own subdomain) -- this only unchecks Include and marks them Excluded, "
+            "it doesn't delete the rows, so they can be brought back the same way."
+        )
+        if st.button(f"Exclude {len(selected_paths)} selected rows from export"):
+            idxs = df.index[df[COL_OLD_PATH].isin(selected_paths)]
+            for idx in idxs:
+                st.session_state.redirect_df.loc[idx, COL_STATUS] = STATUS_EXCLUDED
+                st.session_state.redirect_df.loc[idx, COL_INCLUDE] = False
+            st.session_state.last_bulk_update_count = len(idxs)
+            st.session_state.clear_bulk_selection = True
+            st.rerun()
 
     st.markdown("---")
     back_col, next_col = st.columns([1, 3])
