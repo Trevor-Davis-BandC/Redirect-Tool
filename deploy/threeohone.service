@@ -1,0 +1,14 @@
+[Unit]
+Description=ThreeOhOne Streamlit app
+After=network.target
+
+[Service]
+Type=simple
+User=threeohone
+WorkingDirectory=/home/threeohone/Redirect-Tool
+ExecStart=/home/threeohone/Redirect-Tool/.venv/bin/streamlit run app.py --server.port 8501 --server.address 127.0.0.1 --server.headless true
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
