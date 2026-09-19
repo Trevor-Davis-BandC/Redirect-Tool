@@ -12,7 +12,7 @@ jobs:
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.DEPLOY_HOST }}
-          username: root
+          username: threeohone
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           # The deploy key is restricted server-side (via a `command=`
           # forced-command in authorized_keys) to only ever run
