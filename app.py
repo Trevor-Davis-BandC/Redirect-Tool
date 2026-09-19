@@ -51,7 +51,7 @@ from project_storage import (
     ProjectFileError,
 )
 
-st.set_page_config(page_title="ThreeOhOne", layout="wide")
+st.set_page_config(page_title="ThreeOhOne", page_icon="🔀", layout="wide")
 
 PAGE_NEW_PROJECT = "new_project"
 PAGE_DISCOVERY = "discovery"
