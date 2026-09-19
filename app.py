@@ -7,6 +7,8 @@ the list, and exports a Duda-compatible redirect CSV.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 import streamlit as st
 
@@ -51,7 +53,12 @@ from project_storage import (
     ProjectFileError,
 )
 
-st.set_page_config(page_title="ThreeOhOne", page_icon="🔀", layout="wide")
+ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+LOGO_STACKED = str(ASSETS_DIR / "logo-stacked.png")
+LOGO_HORIZONTAL = str(ASSETS_DIR / "logo-horizontal.png")
+FAVICON = str(ASSETS_DIR / "favicon.png")
+
+st.set_page_config(page_title="ThreeOhOne", page_icon=FAVICON, layout="wide")
 
 PAGE_NEW_PROJECT = "new_project"
 PAGE_DISCOVERY = "discovery"
@@ -158,7 +165,7 @@ def reset_project() -> None:
 
 def render_sidebar() -> None:
     with st.sidebar:
-        st.title("ThreeOhOne")
+        st.image(LOGO_HORIZONTAL, width="stretch")
         st.caption("Old sitemap -> new sitemap -> Duda redirect CSV")
 
         st.markdown("### Workflow")
@@ -834,17 +841,19 @@ def check_password() -> bool:
     if st.session_state.get("_authenticated"):
         return True
 
-    st.title("ThreeOhOne")
-    st.caption("Enter the team password to continue.")
-    with st.form("password_gate_form"):
-        entered_password = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Unlock")
-    if submitted:
-        if entered_password == required_password:
-            st.session_state["_authenticated"] = True
-            st.rerun()
-        else:
-            st.error("Incorrect password.")
+    _, center, _ = st.columns([1, 1.4, 1])
+    with center:
+        st.image(LOGO_STACKED, width="stretch")
+        st.caption("Enter the team password to continue.")
+        with st.form("password_gate_form"):
+            entered_password = st.text_input("Password", type="password")
+            submitted = st.form_submit_button("Unlock")
+        if submitted:
+            if entered_password == required_password:
+                st.session_state["_authenticated"] = True
+                st.rerun()
+            else:
+                st.error("Incorrect password.")
     return False
 
 
@@ -853,6 +862,11 @@ def check_password() -> bool:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    # Streamlit adds a hover "view fullscreen" button to every st.image, which is just noise on a logo.
+    st.html(
+        "<style>[data-testid='stFullScreenFrame']:has([data-testid='stImage']) "
+        "[data-testid='stElementToolbar'] { display: none; }</style>"
+    )
     init_session_state()
     if not check_password():
         return
