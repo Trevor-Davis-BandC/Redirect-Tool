@@ -171,10 +171,10 @@ def render_sidebar() -> None:
         st.markdown("### Workflow")
         for page_key in PAGE_ORDER:
             is_current = st.session_state.page == page_key
-            label = f"➡️ {PAGE_LABELS[page_key]}" if is_current else PAGE_LABELS[page_key]
             if st.button(
-                label,
+                PAGE_LABELS[page_key],
                 key=f"nav_{page_key}",
+                icon=":material/arrow_forward:" if is_current else None,
                 width="stretch",
                 disabled=is_current,
             ):
