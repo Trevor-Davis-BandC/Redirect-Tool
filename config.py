@@ -126,3 +126,7 @@ BLOCKED_HOSTNAMES = {"localhost"}
 # Duda's bulk redirect importer only accepts this many rows per CSV file.
 # Exports larger than this are split into multiple files.
 MAX_REDIRECTS_PER_CSV = 200
+
+# Password-gate login lasts this long from first login, then asks again.
+AUTH_SESSION_HOURS = 8
+AUTH_COOKIE_NAME = "threeohone_auth"

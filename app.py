@@ -7,6 +7,8 @@ the list, and exports a Duda-compatible redirect CSV.
 
 from __future__ import annotations
 
+import json
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -44,7 +46,8 @@ from exporter import (
     read_template_headers,
 )
 from report import build_redirect_report_pdf
-from config import MAX_REDIRECTS_PER_CSV
+from config import AUTH_COOKIE_NAME, AUTH_SESSION_HOURS, MAX_REDIRECTS_PER_CSV
+from auth_token import make_token, verify_token
 from project_storage import (
     build_project_dict,
     save_project_json,
@@ -150,11 +153,11 @@ def init_session_state() -> None:
 
 
 def reset_project() -> None:
-    # Preserve the password-gate flag -- it's not project state, and wiping
+    # Preserve the password-gate state -- it's not project state, and wiping
     # it would force the user back through the password prompt on every
     # reset, which reads as being logged out.
     for key in list(st.session_state.keys()):
-        if key != "_authenticated":
+        if key not in ("_authenticated", "_auth_expires"):
             del st.session_state[key]
     init_session_state()
 
@@ -838,8 +841,20 @@ def check_password() -> bool:
         required_password = ""
     if not required_password:
         return True
+
+    # Logins last AUTH_SESSION_HOURS from first login. The expiry lives in a
+    # signed cookie so it survives page reloads, laptop sleep, and Streamlit
+    # dropping the session after a brief disconnect.
     if st.session_state.get("_authenticated"):
-        return True
+        if time.time() < st.session_state.get("_auth_expires", 0):
+            return True
+        st.session_state["_authenticated"] = False
+    else:
+        cookie_expiry = verify_token(required_password, st.context.cookies.get(AUTH_COOKIE_NAME))
+        if cookie_expiry:
+            st.session_state["_authenticated"] = True
+            st.session_state["_auth_expires"] = cookie_expiry
+            return True
 
     _, center, _ = st.columns([1, 1.4, 1])
     with center:
@@ -850,7 +865,10 @@ def check_password() -> bool:
             submitted = st.form_submit_button("Unlock")
         if submitted:
             if entered_password == required_password:
+                token, expiry = make_token(required_password, AUTH_SESSION_HOURS * 3600)
                 st.session_state["_authenticated"] = True
+                st.session_state["_auth_expires"] = expiry
+                st.session_state["_auth_cookie_to_set"] = token
                 st.rerun()
             else:
                 st.error("Incorrect password.")
@@ -870,6 +888,15 @@ def main() -> None:
     init_session_state()
     if not check_password():
         return
+    token_to_store = st.session_state.pop("_auth_cookie_to_set", None)
+    if token_to_store:
+        max_age = max(int(st.session_state["_auth_expires"] - time.time()), 0)
+        st.html(
+            "<script>document.cookie = "
+            + json.dumps(f"{AUTH_COOKIE_NAME}={token_to_store}; Max-Age={max_age}; Path=/; SameSite=Lax")
+            + " + (location.protocol === 'https:' ? '; Secure' : '');</script>",
+            unsafe_allow_javascript=True,
+        )
     render_sidebar()
 
     page = st.session_state.page
