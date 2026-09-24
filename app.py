@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pandas as pd
 import streamlit as st
@@ -36,7 +37,7 @@ from crawler import crawl_site_links
 from gsc_export import parse_gsc_csv
 from wayback import fetch_wayback_urls
 from matcher import generate_redirect_suggestions
-from url_normalizer import build_normalized_url
+from url_normalizer import build_normalized_url, normalize_path
 from validator import validate_redirects
 from exporter import (
     export_default_csv_chunks,
@@ -121,6 +122,44 @@ def _apply_new_site_urls(new_urls: list[str]) -> None:
     st.session_state.new_sitemap_paths = {build_normalized_url(u).normalized_path for u in new_urls}
     st.session_state.new_sitemap_path_options = _new_site_path_options(new_urls)
     st.session_state.new_sitemap_path_to_url = _new_site_path_to_url(new_urls)
+
+
+def _merge_wayback_urls(existing, domain: str):
+    """Supplement an already-successful discovery result with any extra
+    pages the Wayback Machine has archived for the same domain. A site's
+    live sitemap only reflects what's live right now -- a placeholder
+    landing page, a post-redesign trim, etc. -- so it can under-report a
+    site that genuinely had more pages at some point in its history.
+    """
+    wayback_result = fetch_wayback_urls(domain)
+    if wayback_result.errors or not wayback_result.urls:
+        existing.warnings.append(
+            wayback_result.errors[0] if wayback_result.errors
+            else f"No additional archived pages were found for {domain}."
+        )
+        return existing
+
+    seen_paths = {normalize_path(urlsplit(u).path) for u in existing.urls}
+    added = 0
+    for u in wayback_result.urls:
+        key = normalize_path(urlsplit(u).path)
+        if key in seen_paths:
+            continue
+        seen_paths.add(key)
+        existing.urls.append(u)
+        added += 1
+
+    existing.wayback_source = wayback_result.wayback_source
+    if added:
+        existing.warnings.append(
+            f"Added {added} additional page(s) found via the Wayback Machine for {wayback_result.wayback_source}."
+        )
+    else:
+        existing.warnings.append(
+            f"The Wayback Machine has archived pages for {wayback_result.wayback_source}, "
+            "but none were new -- they matched pages already found."
+        )
+    return existing
 
 
 # ---------------------------------------------------------------------------
@@ -449,6 +488,27 @@ def render_discovery_page() -> None:
                     "crawling won't work either -- the Wayback Machine can often still recover its old "
                     "page list from archive.org's history."
                 )
+            elif (
+                domain
+                and not result.wayback_source
+                and not result.uploaded_filename
+                and not result.gsc_import_filename
+                and not (side == "old" and is_gsc_mode)
+            ):
+                st.caption(
+                    "Sitemap only reflects what's live right now. If this site may have had more "
+                    "pages in the past (a placeholder landing page, a recent redesign), check the "
+                    "Wayback Machine for archived pages to add to this list."
+                )
+                if st.button("Also check the Wayback Machine for older pages", key=f"wayback_merge_{side}"):
+                    with st.spinner(f"Checking archive.org for additional pages under {domain}..."):
+                        merged_result = _merge_wayback_urls(result, domain)
+                    if side == "old":
+                        st.session_state.old_sitemap_result = merged_result
+                    else:
+                        st.session_state.new_sitemap_result = merged_result
+                        _apply_new_site_urls(merged_result.urls)
+                    st.rerun()
 
     can_continue = bool(old_result.urls) and bool(new_result.urls)
 
