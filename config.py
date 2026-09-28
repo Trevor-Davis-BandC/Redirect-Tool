@@ -26,7 +26,7 @@ ROBOTS_TXT_PATH = "/robots.txt"
 # Capped much lower than MAX_URLS_PER_SITE since each crawled page costs a
 # real HTTP request against someone's live site, unlike sitemap URLs which
 # are just strings read from one file.
-MAX_CRAWL_PAGES = 1000
+MAX_CRAWL_PAGES = 300
 
 # Links to these file types are not followed/counted as pages when crawling.
 CRAWL_SKIP_EXTENSIONS = (
