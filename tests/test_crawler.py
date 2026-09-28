@@ -134,3 +134,52 @@ def test_crawl_blocked_localhost_domain_is_rejected():
     result = crawler.crawl_site_links("localhost")
     assert result.urls == []
     assert result.errors
+
+
+def test_extract_embedded_state_paths_recovers_nested_slugs():
+    html = (
+        '<script>window.__NUXT__=(function(a){return {navTree:['
+        '"home\\u002Fwho-we-are","technical-assistance-bess\\u002Finterconnection"'
+        ']}})()</script>'
+    )
+    links = crawler._extract_embedded_state_paths("https://example.com/technical-assistance-bess", html)
+    assert set(links) == {
+        "https://example.com/home/who-we-are",
+        "https://example.com/technical-assistance-bess/interconnection",
+    }
+
+
+def test_extract_embedded_state_paths_ignores_plain_text():
+    html = "<html><body>Nothing here but ordinary text and a / slash.</body></html>"
+    assert crawler._extract_embedded_state_paths("https://example.com/", html) == []
+
+
+def test_crawl_recovers_pages_hidden_in_embedded_state(monkeypatch):
+    # The homepage's real <a href> links only reach the parent page; the
+    # child page is never linked anywhere in the raw HTML -- only present as
+    # escaped JSON inside the framework's hydration script, the way a
+    # client-rendered site builder (e.g. Nuxt) commonly does it.
+    home = _page(
+        '<html><body><a href="/parent">Parent</a></body></html>',
+        "https://example.com/",
+    )
+    parent = _page(
+        '<html><body>No real links here.'
+        '<script>window.__NUXT__=["parent\\u002Fchild"]</script>'
+        '</body></html>',
+        "https://example.com/parent",
+    )
+    child = _page("<html><body>Leaf page.</body></html>", "https://example.com/parent/child")
+
+    url_map = {
+        "https://example.com/robots.txt": FakeResponse(404, b"", "text/plain"),
+        "https://example.com/": home,
+        "https://example.com/parent": parent,
+        "https://example.com/parent/child": child,
+    }
+    monkeypatch.setattr(crawler, "_fetch", make_fake_fetch(url_map))
+
+    result = crawler.crawl_site_links("example.com")
+
+    assert "https://example.com/parent/child" in result.urls
+    assert any("embedded" in w.lower() for w in result.warnings)

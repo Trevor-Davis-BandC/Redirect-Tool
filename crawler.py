@@ -14,6 +14,7 @@ a crawl result vs. a sitemap result.
 
 from __future__ import annotations
 
+import re
 from collections import deque
 from urllib.parse import urljoin, urlsplit
 
@@ -31,6 +32,29 @@ from sitemap import (
 )
 
 _SKIP_LINK_SCHEMES = ("#", "mailto:", "tel:", "javascript:")
+
+# Some site builders (Nuxt/Vue-based ones in particular) render pages
+# server-side but build their navigation menu client-side from a state blob
+# embedded inline as a <script> payload (e.g. `window.__NUXT__ = ...`) --
+# nested pages linked only from that menu never appear as real <a href> tags,
+# so _extract_links() alone can't find them no matter how deep the crawl goes.
+# That same payload commonly escapes "/" as a backslash-u-0-0-2-F sequence
+# to keep a string like ".../script" from prematurely closing the
+# surrounding <script> tag, which doubles as a fingerprint for multi-segment
+# page paths hiding in the blob: "parent" + that escape + "child" unescapes
+# straight to "parent/child".
+_EMBEDDED_SLUG = r"[a-z0-9]+(?:-[a-z0-9]+)*"
+_EMBEDDED_STATE_PATH_RE = re.compile(r'"(' + _EMBEDDED_SLUG + r"(?:\\u002[fF]" + _EMBEDDED_SLUG + r")+)\"")
+
+
+def _extract_embedded_state_paths(page_url: str, html_text: str) -> list[str]:
+    """Recover page paths hidden in a client-rendered site's hydration state
+    (see the module-level comment above _EMBEDDED_STATE_PATH_RE)."""
+    links = []
+    for match in _EMBEDDED_STATE_PATH_RE.finditer(html_text):
+        path = re.sub(r"\\u002[fF]", "/", match.group(1))
+        links.append(urljoin(page_url, "/" + path))
+    return links
 
 
 def _parse_robots_disallow(text: str) -> list[str]:
@@ -119,6 +143,7 @@ def crawl_site_links(domain_or_url: str, max_pages: int = MAX_CRAWL_PAGES) -> Si
     visited: set[str] = set()
     found_urls: list[str] = []
     seen_found: set[str] = set()
+    embedded_state_links: set[str] = set()
 
     while queue and len(found_urls) < max_pages:
         url = queue.popleft()
@@ -154,11 +179,20 @@ def crawl_site_links(domain_or_url: str, max_pages: int = MAX_CRAWL_PAGES) -> Si
             seen_found.add(final_url)
             found_urls.append(final_url)
 
-        for link in _extract_links(final_url, resp.content):
+        embedded_links = _extract_embedded_state_paths(final_url, resp.text)
+        embedded_state_links.update(embedded_links)
+        for link in _extract_links(final_url, resp.content) + embedded_links:
             if link not in visited:
                 queue.append(link)
 
     result.urls = found_urls
+    recovered = embedded_state_links & seen_found
+    if recovered:
+        result.warnings.append(
+            f"Found {len(recovered)} additional page(s) not linked anywhere in the crawled HTML -- "
+            "recovered from JavaScript navigation data embedded in the page (common on client-rendered "
+            "site builders)."
+        )
 
     if queue and len(result.urls) >= max_pages:
         result.truncated = True
