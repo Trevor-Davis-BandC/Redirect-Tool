@@ -26,7 +26,7 @@ ROBOTS_TXT_PATH = "/robots.txt"
 # Capped much lower than MAX_URLS_PER_SITE since each crawled page costs a
 # real HTTP request against someone's live site, unlike sitemap URLs which
 # are just strings read from one file.
-MAX_CRAWL_PAGES = 300
+MAX_CRAWL_PAGES = 1000
 
 # Links to these file types are not followed/counted as pages when crawling.
 CRAWL_SKIP_EXTENSIONS = (
@@ -44,6 +44,12 @@ WAYBACK_CDX_API_URL = "https://web.archive.org/cdx/search/cdx"
 # vary a lot run to run (observed 3-25s for the same query).
 WAYBACK_REQUEST_TIMEOUT_SECONDS = 45
 WAYBACK_CDX_ROW_LIMIT = 20000
+# archive.org's API is prone to short-lived overload spikes (a 503 that
+# clears up within seconds) -- retry transient failures a couple of times
+# with a short backoff before giving up. Never retries a 4xx, since that
+# means something's wrong with the request itself, not a passing blip.
+WAYBACK_MAX_ATTEMPTS = 3
+WAYBACK_RETRY_BACKOFF_SECONDS = 2
 # Path prefixes that are never real pages, even when archived as text/html
 # with a 200 (e.g. probes/scanners archiving their own 404 pages).
 WAYBACK_SKIP_PATH_PREFIXES = (

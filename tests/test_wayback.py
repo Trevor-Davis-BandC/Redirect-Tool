@@ -4,6 +4,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import requests
+import pytest
 
 import wayback
 
@@ -18,6 +19,13 @@ class FakeResponse:
         if self._raise_json_error:
             raise ValueError("not json")
         return self._json_data
+
+
+@pytest.fixture(autouse=True)
+def _no_real_sleeps(monkeypatch):
+    # Every retry test below exercises the backoff path -- stub out the
+    # actual wait so the suite doesn't take real wall-clock seconds per test.
+    monkeypatch.setattr(wayback.time, "sleep", lambda seconds: None)
 
 
 def test_returns_filtered_real_pages(monkeypatch):
@@ -123,3 +131,75 @@ def test_invalid_domain_gives_friendly_error():
 
     assert result.urls == []
     assert result.errors
+
+
+def test_retries_after_transient_503_then_succeeds(monkeypatch):
+    rows = [
+        ["original", "mimetype", "statuscode"],
+        ["http://example.com/", "text/html", "200"],
+    ]
+    responses = [FakeResponse(503), FakeResponse(200, rows)]
+    calls = []
+
+    def _fake_get(*a, **kw):
+        calls.append(1)
+        return responses[len(calls) - 1]
+
+    monkeypatch.setattr(wayback.requests, "get", _fake_get)
+
+    result = wayback.fetch_wayback_urls("example.com")
+
+    assert len(calls) == 2
+    assert result.urls == ["http://example.com/"]
+    assert not result.errors
+
+
+def test_retries_after_transient_network_error_then_succeeds(monkeypatch):
+    rows = [
+        ["original", "mimetype", "statuscode"],
+        ["http://example.com/", "text/html", "200"],
+    ]
+    calls = []
+
+    def _fake_get(*a, **kw):
+        calls.append(1)
+        if len(calls) == 1:
+            raise requests.exceptions.ConnectTimeout("timed out")
+        return FakeResponse(200, rows)
+
+    monkeypatch.setattr(wayback.requests, "get", _fake_get)
+
+    result = wayback.fetch_wayback_urls("example.com")
+
+    assert len(calls) == 2
+    assert result.urls == ["http://example.com/"]
+
+
+def test_does_not_retry_a_4xx(monkeypatch):
+    calls = []
+
+    def _fake_get(*a, **kw):
+        calls.append(1)
+        return FakeResponse(404)
+
+    monkeypatch.setattr(wayback.requests, "get", _fake_get)
+
+    result = wayback.fetch_wayback_urls("example.com")
+
+    assert len(calls) == 1
+    assert "404" in result.errors[0]
+
+
+def test_gives_up_after_exhausting_retries_on_persistent_503(monkeypatch):
+    calls = []
+
+    def _fake_get(*a, **kw):
+        calls.append(1)
+        return FakeResponse(503)
+
+    monkeypatch.setattr(wayback.requests, "get", _fake_get)
+
+    result = wayback.fetch_wayback_urls("example.com")
+
+    assert len(calls) == wayback.WAYBACK_MAX_ATTEMPTS
+    assert "503" in result.errors[0]

@@ -15,6 +15,7 @@ URLs are, never fetched individually.
 
 from __future__ import annotations
 
+import time
 from urllib.parse import urlsplit
 
 import requests
@@ -27,7 +28,40 @@ from config import (
     WAYBACK_REQUEST_TIMEOUT_SECONDS,
     WAYBACK_CDX_ROW_LIMIT,
     WAYBACK_SKIP_PATH_PREFIXES,
+    WAYBACK_MAX_ATTEMPTS,
+    WAYBACK_RETRY_BACKOFF_SECONDS,
 )
+
+
+def _fetch_cdx_with_retries(params: dict):
+    """GET the CDX API, retrying on connection errors and 5xx responses --
+    archive.org's API is prone to short-lived overload spikes. Returns
+    (response, None) on eventual success, or (last_response_or_None,
+    last_exception_or_None) once attempts are exhausted -- exactly one of
+    those two is non-None. Never retries a 4xx: it returns immediately since
+    that means something's wrong with the request itself, not a passing blip.
+    """
+    last_error_resp = None
+    last_exc = None
+    for attempt in range(WAYBACK_MAX_ATTEMPTS):
+        try:
+            resp = requests.get(
+                WAYBACK_CDX_API_URL,
+                params=params,
+                headers={"User-Agent": USER_AGENT},
+                timeout=WAYBACK_REQUEST_TIMEOUT_SECONDS,
+            )
+        except requests.exceptions.RequestException as exc:
+            last_exc = exc
+            last_error_resp = None
+        else:
+            if resp.status_code < 500:
+                return resp, None
+            last_error_resp = resp
+            last_exc = None
+        if attempt < WAYBACK_MAX_ATTEMPTS - 1:
+            time.sleep(WAYBACK_RETRY_BACKOFF_SECONDS * (attempt + 1))
+    return last_error_resp, last_exc
 
 
 def _looks_like_real_page(url: str, mimetype: str, statuscode: str) -> bool:
@@ -73,14 +107,8 @@ def fetch_wayback_urls(domain_or_url: str) -> SitemapResult:
         "limit": str(WAYBACK_CDX_ROW_LIMIT),
     }
 
-    try:
-        resp = requests.get(
-            WAYBACK_CDX_API_URL,
-            params=params,
-            headers={"User-Agent": USER_AGENT},
-            timeout=WAYBACK_REQUEST_TIMEOUT_SECONDS,
-        )
-    except requests.exceptions.RequestException as exc:
+    resp, exc = _fetch_cdx_with_retries(params)
+    if resp is None:
         result.errors.append(f"Could not reach the Wayback Machine's archive API: {exc}")
         return result
 
