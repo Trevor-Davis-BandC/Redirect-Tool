@@ -100,3 +100,47 @@ def test_not_a_csv_file_gives_friendly_error():
 
     assert result.urls == []
     assert result.errors
+
+
+def test_screaming_frog_export_drops_assets_and_broken_and_redirected_links():
+    csv_text = (
+        "Address,Content Type,Status Code\n"
+        "https://example.com/,text/html; charset=UTF-8,200\n"
+        "https://example.com/about-us/,text/html; charset=UTF-8,200\n"
+        "https://example.com/logo.png,image/png,200\n"
+        "https://example.com/style.css,text/css,200\n"
+        "https://example.com/old-page/,text/html; charset=UTF-8,301\n"
+        "https://example.com/gone-page/,text/html; charset=UTF-8,404\n"
+    )
+    result = parse_gsc_csv(_csv(csv_text), "internal_all.csv", "example.com")
+
+    assert set(result.urls) == {
+        "https://example.com/",
+        "https://example.com/about-us/",
+    }
+    assert any("non-200 status" in w or "asset file" in w for w in result.warnings)
+
+
+def test_screaming_frog_export_status_only_column_still_filters():
+    csv_text = "Address,Status Code\nhttps://example.com/real/,200\nhttps://example.com/broken/,500\n"
+    result = parse_gsc_csv(_csv(csv_text), "export.csv", "example.com")
+
+    assert result.urls == ["https://example.com/real/"]
+
+
+def test_bare_gsc_export_without_status_or_content_type_is_unfiltered():
+    """No Status Code / Content Type column at all -- a bare GSC 404 export
+    -- means every row is trusted as-is, same as before this feature."""
+    csv_text = "URL,Last crawled\nhttps://example.com/old-file.pdf,2026-08-08\n"
+    result = parse_gsc_csv(_csv(csv_text), "export.csv", "example.com")
+
+    assert result.urls == ["https://example.com/old-file.pdf"]
+    assert not result.warnings
+
+
+def test_screaming_frog_export_all_filtered_out_gives_friendly_error():
+    csv_text = "Address,Status Code\nhttps://example.com/logo.png,200\n"
+    result = parse_gsc_csv(_csv(csv_text), "export.csv", "example.com")
+
+    assert result.urls == []
+    assert result.errors
