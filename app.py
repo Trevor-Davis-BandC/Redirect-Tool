@@ -301,7 +301,9 @@ def render_new_project_page() -> None:
         st.write(
             "Enter the old and new website domains. ThreeOhOne will look for each site's "
             "XML sitemap automatically, or you can provide a direct sitemap URL -- or, for the old "
-            "site, upload a saved sitemap XML file directly (useful if the old site is no longer live)."
+            "site, upload a saved sitemap XML file directly (useful if the old site is no longer live), "
+            "or a URL list CSV exported from Screaming Frog or a similar crawler (useful for a huge or "
+            "slow site that's better crawled from your own machine)."
         )
     else:
         st.write(
@@ -316,7 +318,7 @@ def render_new_project_page() -> None:
         gsc_csv_file = None
         if mode == PROJECT_MODE_MIGRATION:
             old_domain = st.text_input(
-                "Old website domain (not required if you upload a sitemap XML file below)",
+                "Old website domain (not required if you upload a sitemap XML file or URL list CSV below)",
                 value=st.session_state.old_domain,
                 placeholder="oldsite.com",
             )
@@ -338,6 +340,9 @@ def render_new_project_page() -> None:
                 old_sitemap_file = st.file_uploader(
                     "Or upload the old site's sitemap XML file (optional)", type=["xml"]
                 )
+                old_url_list_csv = st.file_uploader(
+                    "Or upload a URL list CSV -- Screaming Frog export, etc. (optional)", type=["csv"]
+                )
             with col2:
                 new_override = st.text_input(
                     "New sitemap URL override (optional)", value=st.session_state.new_sitemap_override
@@ -356,6 +361,7 @@ def render_new_project_page() -> None:
             old_domain = new_domain
             old_override = ""
             old_sitemap_file = None
+            old_url_list_csv = None
 
         submit_label = "Find Sitemap and Match" if mode == PROJECT_MODE_GSC else "Find Sitemaps and Compare"
         submitted = st.form_submit_button(submit_label, type="primary")
@@ -367,8 +373,10 @@ def render_new_project_page() -> None:
     if not project_name.strip():
         errors.append("Project name is required.")
     if mode == PROJECT_MODE_MIGRATION:
-        if not old_domain.strip() and old_sitemap_file is None:
-            errors.append("The old website domain is required, unless you upload a sitemap XML file.")
+        if not old_domain.strip() and old_sitemap_file is None and old_url_list_csv is None:
+            errors.append(
+                "The old website domain is required, unless you upload a sitemap XML file or URL list CSV."
+            )
         if not new_domain.strip():
             errors.append("The new website domain is required.")
     else:
@@ -391,6 +399,11 @@ def render_new_project_page() -> None:
     if mode == PROJECT_MODE_GSC:
         with st.spinner("Parsing the GSC export..."):
             old_result = parse_gsc_csv(gsc_csv_file.getvalue(), gsc_csv_file.name, new_domain.strip())
+    elif old_url_list_csv is not None:
+        with st.spinner("Parsing the uploaded URL list..."):
+            old_result = parse_gsc_csv(
+                old_url_list_csv.getvalue(), old_url_list_csv.name, old_domain.strip()
+            )
     elif old_sitemap_file is not None:
         with st.spinner("Parsing the uploaded sitemap..."):
             old_result = parse_uploaded_sitemap(
@@ -444,7 +457,8 @@ def render_discovery_page() -> None:
             elif result.wayback_source:
                 st.write(f"**No live site -- pages found via the Wayback Machine for:** {result.wayback_source}")
             elif result.gsc_import_filename:
-                st.write(f"**404 URLs imported from:** {result.gsc_import_filename}")
+                label_prefix = "404 URLs" if is_gsc_mode else "URL list"
+                st.write(f"**{label_prefix} imported from:** {result.gsc_import_filename}")
             elif result.uploaded_filename:
                 st.write(f"**Sitemap found:** uploaded file '{result.uploaded_filename}'")
             else:
