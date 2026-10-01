@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import io
 import re
+import zipfile
 from datetime import date
 from urllib.parse import urlsplit
 
@@ -86,6 +87,23 @@ def build_export_filename(
     if part is not None and total_parts is not None and total_parts > 1:
         return f"{safe_name}-redirects-{today}-part{part}-of-{total_parts}.{extension}"
     return f"{safe_name}-redirects-{today}.{extension}"
+
+
+def build_csv_zip(csv_chunks: list[str], project_name: str) -> bytes:
+    """Bundle every CSV chunk into one ZIP archive, named exactly like the
+    individual "Part N of M" downloads, so a large multi-file export can be
+    grabbed in a single click instead of one download per Duda import."""
+    total_parts = len(csv_chunks)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for i, csv_text in enumerate(csv_chunks, start=1):
+            filename = build_export_filename(
+                project_name,
+                part=i if total_parts > 1 else None,
+                total_parts=total_parts if total_parts > 1 else None,
+            )
+            zf.writestr(filename, csv_text)
+    return buffer.getvalue()
 
 
 def chunk_rows(rows: list[dict], chunk_size: int = MAX_REDIRECTS_PER_CSV) -> list[list[dict]]:

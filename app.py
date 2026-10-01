@@ -43,6 +43,7 @@ from exporter import (
     export_default_csv_chunks,
     export_with_template_chunks,
     build_export_filename,
+    build_csv_zip,
     guess_column_mapping,
     read_template_headers,
 )
@@ -880,6 +881,15 @@ def render_export_page() -> None:
                 f"Duda accepts up to {MAX_REDIRECTS_PER_CSV} redirects per CSV import, so this export "
                 f"is split into {total_parts} files -- import each one separately."
             )
+            st.download_button(
+                f"Download All {total_parts} Parts (ZIP)",
+                data=build_csv_zip(csv_chunks, st.session_state.project_name),
+                file_name=build_export_filename(st.session_state.project_name, "zip"),
+                mime="application/zip",
+                type="primary",
+                key="csv_download_zip",
+            )
+            st.caption("Or download each part separately below:")
         for i, csv_text in enumerate(csv_chunks, start=1):
             label = "Download Duda Redirect CSV" if total_parts == 1 else f"Download Duda Redirect CSV -- Part {i} of {total_parts}"
             filename = build_export_filename(

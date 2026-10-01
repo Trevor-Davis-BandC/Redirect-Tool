@@ -29,6 +29,7 @@ from exporter import (
     export_with_template,
     export_with_template_chunks,
     build_export_filename,
+    build_csv_zip,
     guess_column_mapping,
     chunk_rows,
     DEFAULT_OLD_COLUMN,
@@ -237,3 +238,27 @@ def test_build_export_filename_includes_part_suffix_when_multiple_parts():
 def test_build_export_filename_omits_part_suffix_for_single_part():
     filename = build_export_filename("My Project", part=1, total_parts=1)
     assert "part" not in filename
+
+
+def test_build_csv_zip_bundles_every_chunk_under_its_own_part_filename():
+    import zipfile
+
+    chunks = ["Old Page URL,Destination Page URL,Redirect Type\n/a,/b,301\n"] * 3
+    zip_bytes = build_csv_zip(chunks, "My Project")
+
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        names = sorted(zf.namelist())
+        assert len(names) == 3
+        assert all("part" in n and "-of-3" in n for n in names)
+        assert zf.read(names[0]).decode("utf-8") == chunks[0]
+
+
+def test_build_csv_zip_single_chunk_has_no_part_suffix():
+    import zipfile
+
+    zip_bytes = build_csv_zip(["Old Page URL,Destination Page URL,Redirect Type\n/a,/b,301\n"], "My Project")
+
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        names = zf.namelist()
+        assert len(names) == 1
+        assert "part" not in names[0]
