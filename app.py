@@ -105,6 +105,40 @@ def _new_site_path_to_url(new_urls: list[str]) -> dict[str, str]:
     return {build_normalized_url(u).original_path: u for u in new_urls}
 
 
+def _path_prefix_summary(df: pd.DataFrame) -> pd.DataFrame:
+    """Group old paths by their first path segment and show, per group, how
+    many defaulted to the homepage -- a prefix where most URLs defaulted
+    suggests that whole section structurally doesn't belong on the new site
+    (e.g. an old platform's full product catalog, which has nothing to match
+    against on a small marketing site), worth noticing before reviewing rows
+    one at a time. Platform-agnostic by design: it's just "did this whole
+    group fail to match," not a guess at any particular platform's URLs.
+    """
+    def prefix_of(path: str) -> str:
+        segments = [s for s in (path or "").split("/") if s]
+        return "/" + segments[0] if segments else "/ (home)"
+
+    work = df[[COL_OLD_PATH, COL_NEW_PATH]].copy()
+    work["_prefix"] = work[COL_OLD_PATH].map(prefix_of)
+    work["_defaulted"] = work[COL_NEW_PATH] == "/"
+
+    rows = []
+    for prefix, group in work.groupby("_prefix"):
+        total = len(group)
+        defaulted = int(group["_defaulted"].sum())
+        rows.append(
+            {
+                "Path prefix": prefix,
+                "URLs": total,
+                "Defaulted to home": defaulted,
+                "Defaulted %": round(100 * defaulted / total) if total else 0,
+                "Example": group[COL_OLD_PATH].iloc[0],
+            }
+        )
+    summary = pd.DataFrame(rows, columns=["Path prefix", "URLs", "Defaulted to home", "Defaulted %", "Example"])
+    return summary.sort_values("Defaulted to home", ascending=False).reset_index(drop=True)
+
+
 def _sync_new_url_column(df: pd.DataFrame) -> pd.DataFrame:
     """Recompute Suggested New URL from Suggested New Path so the reference
     URL always matches the currently selected path, including after dropdown
@@ -613,6 +647,21 @@ def render_review_page() -> None:
         "the new/staging site right now, so you can click through and double-check the redirect lands "
         "in the right place -- only the path is ever exported, never that domain."
     )
+
+    prefix_summary = _path_prefix_summary(df)
+    flagged = prefix_summary[(prefix_summary["URLs"] >= 3) & (prefix_summary["Defaulted %"] >= 80)]
+    summary_label = (
+        f"Path-prefix match summary -- {len(flagged)} section{'s' if len(flagged) != 1 else ''} look unmatched"
+        if len(flagged) else "Path-prefix match summary"
+    )
+    with st.expander(summary_label, expanded=bool(len(flagged))):
+        st.caption(
+            "Old paths grouped by their first path segment, with how many defaulted to the homepage. A "
+            "prefix where most URLs defaulted suggests that whole section structurally doesn't belong on "
+            "the new site (e.g. an old platform's full product catalog) -- worth bulk-redirecting "
+            "elsewhere below rather than reviewing it one row at a time."
+        )
+        st.dataframe(prefix_summary, hide_index=True, width="stretch")
 
     status_options = ["All"] + ALL_STATUSES
     status_filter = st.radio("Filter by status", status_options, horizontal=True)
