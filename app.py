@@ -780,6 +780,54 @@ def render_review_page() -> None:
                 st.session_state.clear_bulk_selection = True
                 st.rerun()
 
+        st.caption(
+            "Or replace this whole selection with a single Duda wildcard rule, so the export has one row "
+            "covering all of them instead of one row per URL -- e.g. `/products/{handle}` for a uniform "
+            "URL shape, or `/collections/**` to match any depth. Confirm the pattern actually works in "
+            "Duda (test a real link, not just that the rule imports) before relying on it for live "
+            "traffic -- the individual rows below are excluded, not deleted, so you can undo this by "
+            "setting them back to Approved."
+        )
+        wc_col1, wc_col2 = st.columns(2)
+        with wc_col1:
+            wildcard_old = st.text_input(
+                "Old path pattern", placeholder="/collections/**", key="bulk_wildcard_old"
+            )
+        with wc_col2:
+            wildcard_new = st.text_input(
+                "Destination pattern", placeholder="https://shop.example.com/collections/**", key="bulk_wildcard_new"
+            )
+        if st.button(f"Add this wildcard rule and exclude the {len(selected_paths)} selected rows"):
+            old_pattern = wildcard_old.strip()
+            new_pattern = wildcard_new.strip()
+            if not old_pattern or not new_pattern:
+                st.warning("Enter both the old path pattern and the destination pattern first.")
+            else:
+                if not old_pattern.startswith("/"):
+                    old_pattern = "/" + old_pattern
+                idxs = df.index[df[COL_OLD_PATH].isin(selected_paths)]
+                for idx in idxs:
+                    st.session_state.redirect_df.loc[idx, COL_STATUS] = STATUS_EXCLUDED
+                    st.session_state.redirect_df.loc[idx, COL_INCLUDE] = False
+                old_domain = (st.session_state.old_domain or "").strip()
+                old_base = old_domain if old_domain.startswith(("http://", "https://")) else f"https://{old_domain}"
+                wildcard_row = pd.DataFrame([{
+                    COL_INCLUDE: True,
+                    COL_OLD_URL: old_base.rstrip("/") + old_pattern,
+                    COL_OLD_PATH: old_pattern,
+                    COL_NEW_URL: new_pattern,
+                    COL_NEW_PATH: new_pattern,
+                    COL_REDIRECT_TYPE: REDIRECT_TYPE_PERMANENT,
+                    COL_STATUS: STATUS_APPROVED,
+                    COL_NOTES: "Wildcard rule -- covers every old path matching this pattern.",
+                }])
+                st.session_state.redirect_df = pd.concat(
+                    [st.session_state.redirect_df, wildcard_row], ignore_index=True
+                )
+                st.session_state.last_bulk_update_count = len(idxs) + 1
+                st.session_state.clear_bulk_selection = True
+                st.rerun()
+
     st.markdown("---")
     back_col, next_col = st.columns([1, 3])
     with back_col:
