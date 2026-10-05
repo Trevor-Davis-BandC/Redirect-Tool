@@ -17,7 +17,7 @@ import io
 import re
 import zipfile
 from datetime import date
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 import pandas as pd
 
@@ -43,18 +43,25 @@ DEST_COLUMN_HINTS = ["new", "destination", "dest", "to", "target"]
 REDIRECT_TYPE_COLUMN_HINTS = ["redirect type", "type", "status code", "code"]
 
 
-def _to_export_path(value: str) -> str:
+def _to_export_path(value: str, own_host: str = "") -> str:
     """Reduce a value (path or full URL) to an exportable path: leading slash, no fragment.
 
-    Only the path is ever exported -- any domain (including a temporary
-    staging/preview domain) is stripped, since Duda's importer expects a
-    path relative to the site it's applied to.
+    For a same-site destination (no host, or a host matching `own_host` --
+    including a temporary staging/preview domain), only the path is ever
+    exported, since Duda's importer expects a path relative to the site it's
+    applied to. A destination on a DIFFERENT host -- e.g. a redirect sending
+    a Shopify catalog's old URLs to a shop.* subdomain while everything else
+    moves to the new site -- is preserved as a full absolute URL instead,
+    since Duda's importer accepts a full external URL for a cross-domain
+    "Destination - Custom URL" rule.
     """
     value = (value or "").strip()
     if not value:
         return ""
     if "://" in value or value.startswith("//"):
         parts = urlsplit(value if "://" in value else "https:" + value)
+        if own_host and parts.netloc.lower() != own_host.lower():
+            return urlunsplit((parts.scheme or "https", parts.netloc, parts.path or "/", parts.query, ""))
         path = parts.path or "/"
         if parts.query:
             path = f"{path}?{parts.query}"
@@ -124,12 +131,22 @@ def _csv_text_from_rows(rows: list[dict], columns: list[str]) -> str:
     return buf.getvalue()
 
 
-def build_default_export_rows(df: pd.DataFrame) -> list[dict]:
+def _host_of(domain_or_url: str) -> str:
+    if not domain_or_url:
+        return ""
+    value = domain_or_url if "://" in domain_or_url else f"https://{domain_or_url}"
+    return urlsplit(value).netloc.lower()
+
+
+def build_default_export_rows(df: pd.DataFrame, own_domain: str = "") -> list[dict]:
     """Build the list of export-ready row dicts, applying all export rules.
 
-    Each dict has keys DEFAULT_OLD_COLUMN, DEFAULT_NEW_COLUMN, and
-    DEFAULT_REDIRECT_TYPE_COLUMN.
+    `own_domain` is the project's own new-site domain -- a destination row
+    pointing anywhere else (e.g. a subdomain override) is exported as a full
+    external URL instead of being stripped to a same-site path. Each dict has
+    keys DEFAULT_OLD_COLUMN, DEFAULT_NEW_COLUMN, and DEFAULT_REDIRECT_TYPE_COLUMN.
     """
+    own_host = _host_of(own_domain)
     rows = []
     seen_sources: set[str] = set()
 
@@ -140,7 +157,7 @@ def build_default_export_rows(df: pd.DataFrame) -> list[dict]:
             continue
 
         old_path = _to_export_path(str(row.get(COL_OLD_PATH, "") or ""))
-        new_path = _to_export_path(str(row.get(COL_NEW_PATH, "") or ""))
+        new_path = _to_export_path(str(row.get(COL_NEW_PATH, "") or ""), own_host=own_host)
 
         if not old_path or not new_path:
             continue
@@ -161,20 +178,20 @@ def build_default_export_rows(df: pd.DataFrame) -> list[dict]:
     return rows
 
 
-def export_default_csv(df: pd.DataFrame) -> str:
+def export_default_csv(df: pd.DataFrame, own_domain: str = "") -> str:
     """Return CSV text (UTF-8, quoted as needed) matching Duda's import template.
 
     Contains every exportable row in one file, ignoring Duda's per-file
     row limit -- use `export_default_csv_chunks` when that limit matters.
     """
-    rows = build_default_export_rows(df)
+    rows = build_default_export_rows(df, own_domain=own_domain)
     columns = [DEFAULT_OLD_COLUMN, DEFAULT_NEW_COLUMN, DEFAULT_REDIRECT_TYPE_COLUMN]
     return _csv_text_from_rows(rows, columns)
 
 
-def export_default_csv_chunks(df: pd.DataFrame, chunk_size: int = MAX_REDIRECTS_PER_CSV) -> list[str]:
+def export_default_csv_chunks(df: pd.DataFrame, chunk_size: int = MAX_REDIRECTS_PER_CSV, own_domain: str = "") -> list[str]:
     """Return one or more CSV texts, each with at most `chunk_size` rows."""
-    rows = build_default_export_rows(df)
+    rows = build_default_export_rows(df, own_domain=own_domain)
     columns = [DEFAULT_OLD_COLUMN, DEFAULT_NEW_COLUMN, DEFAULT_REDIRECT_TYPE_COLUMN]
     return [_csv_text_from_rows(chunk, columns) for chunk in chunk_rows(rows, chunk_size)]
 
@@ -237,6 +254,7 @@ def export_with_template(
     destination_column: str,
     redirect_type_column: str | None = None,
     default_values: dict[str, str] | None = None,
+    own_domain: str = "",
 ) -> str:
     """Build CSV text matching a Duda template's headers and column order.
 
@@ -246,7 +264,7 @@ def export_with_template(
     file -- use `export_with_template_chunks` when Duda's per-file row
     limit matters.
     """
-    rows = build_default_export_rows(df)
+    rows = build_default_export_rows(df, own_domain=own_domain)
     out_rows = _map_rows_to_template(rows, template_headers, source_column, destination_column, redirect_type_column, default_values)
     return _csv_text_from_rows(out_rows, template_headers)
 
@@ -259,9 +277,10 @@ def export_with_template_chunks(
     redirect_type_column: str | None = None,
     default_values: dict[str, str] | None = None,
     chunk_size: int = MAX_REDIRECTS_PER_CSV,
+    own_domain: str = "",
 ) -> list[str]:
     """Return one or more CSV texts matching a Duda template, each with at most `chunk_size` rows."""
-    rows = build_default_export_rows(df)
+    rows = build_default_export_rows(df, own_domain=own_domain)
     csv_texts = []
     for chunk in chunk_rows(rows, chunk_size):
         out_rows = _map_rows_to_template(chunk, template_headers, source_column, destination_column, redirect_type_column, default_values)

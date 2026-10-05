@@ -253,6 +253,40 @@ def test_build_csv_zip_bundles_every_chunk_under_its_own_part_filename():
         assert zf.read(names[0]).decode("utf-8") == chunks[0]
 
 
+def test_cross_domain_destination_keeps_full_url_when_own_domain_given():
+    """A destination on a different host (e.g. a Shopify catalog redirected
+    to a shop.* subdomain while everything else moves to the new site)
+    exports as a full external URL instead of being stripped to a path."""
+    df = pd.DataFrame([
+        _row("/products/wild-rice", "https://shop.example.com/products/wild-rice"),
+        _row("/about", "/about-us"),
+    ])
+    csv_text = export_default_csv(df, own_domain="https://staging164721.bvmlocal.com")
+    lines = csv_text.strip().splitlines()
+    assert "/products/wild-rice,https://shop.example.com/products/wild-rice,301" in lines[1]
+    assert "/about,/about-us,301" in lines[2]
+
+
+def test_cross_domain_destination_strips_to_path_when_host_matches_own_domain():
+    df = pd.DataFrame([_row("/about", "https://staging164721.bvmlocal.com/about-us")])
+    csv_text = export_default_csv(df, own_domain="https://staging164721.bvmlocal.com")
+    assert "/about,/about-us,301" in csv_text.strip().splitlines()[1]
+
+
+def test_without_own_domain_a_full_url_destination_still_strips_to_path():
+    """Backward compatibility: omitting own_domain (the old call signature)
+    behaves exactly as before -- always strip to a path."""
+    df = pd.DataFrame([_row("/about", "https://shop.example.com/about-us")])
+    csv_text = export_default_csv(df)
+    assert "/about,/about-us,301" in csv_text.strip().splitlines()[1]
+
+
+def test_cross_domain_destination_chunks_preserve_full_url():
+    df = pd.DataFrame([_row("/cart", "https://shop.example.com/cart")])
+    chunks = export_default_csv_chunks(df, own_domain="https://example.com")
+    assert "/cart,https://shop.example.com/cart,301" in chunks[0].strip().splitlines()[1]
+
+
 def test_build_csv_zip_single_chunk_has_no_part_suffix():
     import zipfile
 

@@ -109,9 +109,21 @@ def _sync_new_url_column(df: pd.DataFrame) -> pd.DataFrame:
     """Recompute Suggested New URL from Suggested New Path so the reference
     URL always matches the currently selected path, including after dropdown
     edits -- rather than going stale like a value set once at generation time.
+
+    A Suggested New Path that's already a full URL (e.g. a subdomain-override
+    destination set by the "redirect to a different domain" bulk action) is
+    passed through as-is rather than looked up -- it isn't one of the new
+    site's own paths, so the lookup would just blank it out.
     """
     path_to_url = st.session_state.new_sitemap_path_to_url
-    df[COL_NEW_URL] = df[COL_NEW_PATH].map(lambda p: path_to_url.get(p, ""))
+
+    def resolve(path: str) -> str:
+        path = path or ""
+        if path.startswith(("http://", "https://")):
+            return path
+        return path_to_url.get(path, "")
+
+    df[COL_NEW_URL] = df[COL_NEW_PATH].map(resolve)
     return df
 
 
@@ -623,6 +635,15 @@ def render_review_page() -> None:
 
     st.caption(f"Showing {len(display_df)} of {len(df)} redirects.")
 
+    # Include whatever's actually in the New Path column right now -- a
+    # subdomain-override destination (a full URL, not one of the new site's
+    # own paths) still needs to appear as a valid option, or the selectbox
+    # column has no way to display the value a bulk action just set.
+    new_path_select_options = list(st.session_state.new_sitemap_path_options)
+    for extra in display_df[COL_NEW_PATH].unique():
+        if extra and extra not in new_path_select_options:
+            new_path_select_options.append(extra)
+
     edited = st.data_editor(
         display_df,
         key="redirect_editor",
@@ -635,7 +656,7 @@ def render_review_page() -> None:
             COL_OLD_PATH: st.column_config.TextColumn("Old Path", disabled=True),
             COL_NEW_URL: st.column_config.LinkColumn("Suggested New URL", disabled=True),
             COL_NEW_PATH: st.column_config.SelectboxColumn(
-                "Suggested New Path", options=st.session_state.new_sitemap_path_options
+                "Suggested New Path", options=new_path_select_options
             ),
             COL_REDIRECT_TYPE: st.column_config.SelectboxColumn("Redirect Type", options=REDIRECT_TYPE_OPTIONS),
             COL_STATUS: st.column_config.SelectboxColumn("Status", options=ALL_STATUSES),
@@ -729,6 +750,35 @@ def render_review_page() -> None:
             st.session_state.last_bulk_update_count = len(idxs)
             st.session_state.clear_bulk_selection = True
             st.rerun()
+
+        st.caption(
+            "Or send this selection to a different domain or subdomain entirely -- same old path, new "
+            "host. Useful when part of the old site is moving somewhere other than the new site itself "
+            "(e.g. a Shopify catalog moving to shop.yoursite.com while everything else moves to the new "
+            "site on the main domain)."
+        )
+        override_domain = st.text_input(
+            "Destination domain (e.g. https://shop.example.com)", key="bulk_override_domain"
+        )
+        if st.button(f"Redirect {len(selected_paths)} selected rows to this domain"):
+            domain = override_domain.strip()
+            if not domain:
+                st.warning("Enter a destination domain first.")
+            else:
+                base = domain if domain.startswith(("http://", "https://")) else f"https://{domain}"
+                base = base.rstrip("/")
+                idxs = df.index[df[COL_OLD_PATH].isin(selected_paths)]
+                for idx in idxs:
+                    old_path = st.session_state.redirect_df.loc[idx, COL_OLD_PATH]
+                    full_url = base + old_path
+                    st.session_state.redirect_df.loc[idx, COL_NEW_PATH] = full_url
+                    st.session_state.redirect_df.loc[idx, COL_NEW_URL] = full_url
+                    st.session_state.redirect_df.loc[idx, COL_REDIRECT_TYPE] = REDIRECT_TYPE_PERMANENT
+                    st.session_state.redirect_df.loc[idx, COL_STATUS] = STATUS_APPROVED
+                    st.session_state.redirect_df.loc[idx, COL_INCLUDE] = True
+                st.session_state.last_bulk_update_count = len(idxs)
+                st.session_state.clear_bulk_selection = True
+                st.rerun()
 
     st.markdown("---")
     back_col, next_col = st.columns([1, 3])
@@ -865,11 +915,12 @@ def render_export_page() -> None:
 
             if can_export:
                 csv_chunks = export_with_template_chunks(
-                    df, headers, source_col, dest_col, redirect_type_col, default_values
+                    df, headers, source_col, dest_col, redirect_type_col, default_values,
+                    own_domain=st.session_state.new_domain,
                 )
     else:
         if can_export:
-            csv_chunks = export_default_csv_chunks(df)
+            csv_chunks = export_default_csv_chunks(df, own_domain=st.session_state.new_domain)
 
     if not can_export:
         st.button("Download Duda Redirect CSV", disabled=True)
