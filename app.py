@@ -245,6 +245,8 @@ def init_session_state() -> None:
         "bulk_selected_paths": [],
         "clear_bulk_selection": False,
         "last_bulk_update_count": None,
+        "last_prefix_selection_count": None,
+        "last_prefix_selection_name": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -348,6 +350,27 @@ def render_sidebar() -> None:
 
 def render_new_project_page() -> None:
     st.header("1. New Project")
+
+    with st.expander("How this page works", icon=":material/help:"):
+        st.markdown(
+            "**Project type** -- *Site Migration* compares an old site against a new one and suggests "
+            "a redirect for every old URL. *GSC 404 Cleanup* instead takes a list of already-known 404s "
+            "(from Google Search Console or a similar export) and matches each one against a single "
+            "live site's own sitemap -- use this when the site itself isn't changing, you just need to "
+            "clean up a pile of broken links.\n\n"
+            "**Finding the old site's URLs -- four ways, in order of how much they rely on the old site "
+            "still being reachable:**\n"
+            "- *Just enter the domain* -- the normal case. ThreeOhOne looks for a sitemap automatically, "
+            "and falls back to crawling the site's own links or checking the Wayback Machine if it can't "
+            "find one.\n"
+            "- *Sitemap URL override* -- the site has a sitemap, just not at the usual `/sitemap.xml` "
+            "location.\n"
+            "- *Upload a sitemap XML file* -- the old site is offline, but you (or the client) saved a "
+            "copy of its sitemap beforehand.\n"
+            "- *Upload a URL list CSV* -- a Screaming Frog export or similar. Use this for a site too "
+            "large or slow for ThreeOhOne's own crawler to handle safely (a full e-commerce catalog, "
+            "say), or when you've already got a crawl done and don't want to redo it."
+        )
 
     mode = st.radio(
         "Project type",
@@ -488,6 +511,21 @@ def render_new_project_page() -> None:
 
 def render_discovery_page() -> None:
     st.header("2. Sitemap Discovery Results")
+
+    with st.expander("How this page works", icon=":material/help:"):
+        st.markdown(
+            "Shows what ThreeOhOne found for each side and how it found it -- a real sitemap, pages "
+            "found by crawling the site's own links, or pages recovered from the Wayback Machine. Pages "
+            "found reflects what's usable for matching, after removing duplicates.\n\n"
+            "**\"Also check the Wayback Machine for older pages\"** appears even when a sitemap was "
+            "found, because a *live* sitemap only reflects what's on the site *right now* -- it can "
+            "under-report a site that genuinely had more pages at some point (a placeholder landing "
+            "page after a redesign, for instance). Running it adds any extra archived pages it finds "
+            "on top of what's already there, rather than replacing it.\n\n"
+            "**If a site has no sitemap at all,** a \"Crawl the site's links instead\" and a \"Check the "
+            "Wayback Machine instead\" button both appear -- crawl for a live site with working "
+            "internal navigation, Wayback for a dead one (expired domain, cancelled hosting)."
+        )
 
     old_result = st.session_state.old_sitemap_result
     new_result = st.session_state.new_sitemap_result
@@ -635,6 +673,36 @@ def render_discovery_page() -> None:
 def render_review_page() -> None:
     st.header("3. Redirect Review")
 
+    with st.expander("How this page works", icon=":material/help:"):
+        st.markdown(
+            "Every old URL gets a suggested destination, and the table below lets you adjust any of "
+            "them by hand. The sections below cover the bulk tools -- useful once a project has more "
+            "rows than it makes sense to review one at a time.\n\n"
+            "**Path-prefix match summary** -- groups old URLs by their first path segment and shows how "
+            "many defaulted to the homepage in each group. A small group defaulting is normal (a stray "
+            "legacy URL). A *large* group defaulting -- a full product catalog, a blog with no new-site "
+            "equivalent -- means that whole section structurally doesn't belong on the new site, which "
+            "is exactly what the next three tools are for. Click a row to select every URL in that "
+            "prefix below, instead of searching for it.\n\n"
+            "**The three bulk actions, and when to reach for each:**\n"
+            "- *Set destination path / redirect type* -- a handful of specific rows need a particular "
+            "match. Good for individual corrections.\n"
+            "- *Redirect selected rows to a different domain* -- a **small** selection (a few one-off "
+            "pages like `/cart` or `/search`) needs to go to a different domain or subdomain. Each row "
+            "keeps its own path on that domain.\n"
+            "- *Collapse into one wildcard rule* -- a **large**, uniformly-shaped section (a whole "
+            "product catalog, say) needs to go to a different domain. Writes one Duda wildcard/`"
+            "{variable}` rule covering the whole pattern instead of one row per URL. Prefer this over "
+            "the per-row action for anything beyond a handful of rows -- setting hundreds of rows to "
+            "hundreds of distinct destination URLs individually can make the table itself slow to work "
+            "with.\n\n"
+            "**Example scenario:** an old Shopify store is moving to a new site, with the product "
+            "catalog moving to a `shop.` subdomain instead. The prefix summary flags `/products` and "
+            "`/collections` as fully unmatched. Collapse each into one wildcard rule pointed at the shop "
+            "subdomain, redirect the handful of one-off paths (`/cart`, `/account/login`, `/search`) to "
+            "it individually, and leave everything else to match normally against the new site."
+        )
+
     df = st.session_state.redirect_df
     if df is None:
         st.warning("Generate redirect suggestions first.")
@@ -651,6 +719,16 @@ def render_review_page() -> None:
         count = st.session_state.last_bulk_update_count
         st.success(f"Updated {count} redirect{'s' if count != 1 else ''}.")
         st.session_state.last_bulk_update_count = None
+
+    if st.session_state.get("last_prefix_selection_count"):
+        count = st.session_state.last_prefix_selection_count
+        name = st.session_state.last_prefix_selection_name
+        st.success(
+            f"Selected {count} row{'s' if count != 1 else ''} under {name} -- scroll down to "
+            "\"Bulk update redirects\" to act on them."
+        )
+        st.session_state.last_prefix_selection_count = None
+        st.session_state.last_prefix_selection_name = None
 
     st.write(
         "Every old URL gets a destination -- pages with no clear match on the new site default to "
@@ -672,9 +750,32 @@ def render_review_page() -> None:
             "Old paths grouped by their first path segment, with how many defaulted to the homepage. A "
             "prefix where most URLs defaulted suggests that whole section structurally doesn't belong on "
             "the new site (e.g. an old platform's full product catalog) -- worth bulk-redirecting "
-            "elsewhere below rather than reviewing it one row at a time."
+            "elsewhere below rather than reviewing it one row at a time. Click a row to select every URL "
+            "in that prefix in \"Bulk update redirects\" below."
         )
-        st.dataframe(prefix_summary, hide_index=True, width="stretch")
+        prefix_table_event = st.dataframe(
+            prefix_summary,
+            hide_index=True,
+            width="stretch",
+            on_select="rerun",
+            selection_mode="single-row",
+            key="prefix_summary_table",
+        )
+        clicked_rows = prefix_table_event.get("selection", {}).get("rows", [])
+        if clicked_rows:
+            clicked_prefix = prefix_summary.iloc[clicked_rows[0]]["Path prefix"]
+            # The dataframe's own selection state is sticky across reruns (it
+            # stays "selected" until the user clicks it again), so only act
+            # the first time a given prefix is clicked -- otherwise this
+            # would stomp on any manual edit made to the selection afterward.
+            if st.session_state.get("_last_prefix_click") != clicked_prefix:
+                st.session_state._last_prefix_click = clicked_prefix
+                st.session_state.bulk_selected_paths = [
+                    p for p in df[COL_OLD_PATH] if _is_in_path_prefix(p, clicked_prefix)
+                ]
+                st.session_state.last_prefix_selection_count = len(st.session_state.bulk_selected_paths)
+                st.session_state.last_prefix_selection_name = clicked_prefix
+                st.rerun()
 
     status_options = ["All"] + ALL_STATUSES
     status_filter = st.radio("Filter by status", status_options, horizontal=True)
@@ -933,6 +1034,20 @@ def render_review_page() -> None:
 
 def render_export_page() -> None:
     st.header("4. Validate & Export")
+
+    with st.expander("How this page works", icon=":material/help:"):
+        st.markdown(
+            "Checks the redirect table for problems (duplicate source paths, two rules pointing the "
+            "same place, blank destinations) before building the export. Fix what's flagged, or check "
+            "\"Export despite warnings\" if you've reviewed them and they're fine to leave.\n\n"
+            "**Export format** -- the default matches Duda's own bulk-redirect CSV template exactly. If "
+            "the Duda account uses a different template (extra required columns, different header "
+            "names), upload it and map which columns are the old URL, new URL, and redirect type -- "
+            "everything else gets filled from the template's own example row.\n\n"
+            "**Multiple files** -- Duda accepts at most 200 redirects per CSV. Anything larger splits "
+            "into several files automatically, with a single ZIP download covering all of them in one "
+            "click, plus each part available separately below it."
+        )
 
     df = st.session_state.redirect_df
     if df is None:
