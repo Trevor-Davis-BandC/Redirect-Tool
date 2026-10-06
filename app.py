@@ -687,11 +687,21 @@ def render_review_page() -> None:
     # Include whatever's actually in the New Path column right now -- a
     # subdomain-override destination (a full URL, not one of the new site's
     # own paths) still needs to appear as a valid option, or the selectbox
-    # column has no way to display the value a bulk action just set.
+    # column has no way to display the value a bulk action just set. Capped,
+    # since the "redirect selected rows to this domain" bulk action gives
+    # each row its own distinct destination URL -- applied to hundreds of
+    # rows at once, an uncapped merge turns this into an options list with
+    # hundreds of entries on every row's dropdown, which is what made the
+    # whole table (and the rest of the page) grind to a halt.
+    MAX_EXTRA_NEW_PATH_OPTIONS = 25
     new_path_select_options = list(st.session_state.new_sitemap_path_options)
+    extra_seen = 0
     for extra in display_df[COL_NEW_PATH].unique():
+        if extra_seen >= MAX_EXTRA_NEW_PATH_OPTIONS:
+            break
         if extra and extra not in new_path_select_options:
             new_path_select_options.append(extra)
+            extra_seen += 1
 
     edited = st.data_editor(
         display_df,
