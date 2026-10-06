@@ -105,6 +105,23 @@ def _new_site_path_to_url(new_urls: list[str]) -> dict[str, str]:
     return {build_normalized_url(u).original_path: u for u in new_urls}
 
 
+def _path_prefix(path: str) -> str:
+    """The first path segment, e.g. "/collections/x/products/y" -> "/collections".
+
+    Deliberately NOT a substring match -- "/collections/x/products/y" contains
+    the text "/products" but does not belong under the "/products" prefix, so
+    this only ever looks at the leading segment, not anywhere else in the path.
+    """
+    segments = [s for s in (path or "").split("/") if s]
+    return "/" + segments[0] if segments else "/ (home)"
+
+
+def _is_in_path_prefix(path: str, prefix: str) -> bool:
+    if prefix == "/ (home)":
+        return not path or path == "/"
+    return path == prefix or path.startswith(prefix + "/")
+
+
 def _path_prefix_summary(df: pd.DataFrame) -> pd.DataFrame:
     """Group old paths by their first path segment and show, per group, how
     many defaulted to the homepage -- a prefix where most URLs defaulted
@@ -114,12 +131,8 @@ def _path_prefix_summary(df: pd.DataFrame) -> pd.DataFrame:
     one at a time. Platform-agnostic by design: it's just "did this whole
     group fail to match," not a guess at any particular platform's URLs.
     """
-    def prefix_of(path: str) -> str:
-        segments = [s for s in (path or "").split("/") if s]
-        return "/" + segments[0] if segments else "/ (home)"
-
     work = df[[COL_OLD_PATH, COL_NEW_PATH]].copy()
-    work["_prefix"] = work[COL_OLD_PATH].map(prefix_of)
+    work["_prefix"] = work[COL_OLD_PATH].map(_path_prefix)
     work["_defaulted"] = work[COL_NEW_PATH] == "/"
 
     rows = []
@@ -748,6 +761,21 @@ def render_review_page() -> None:
     if st.button(f"Select all {len(display_df)} filtered rows above"):
         st.session_state.bulk_selected_paths = list(display_df[COL_OLD_PATH])
         st.rerun()
+
+    prefix_pick_col, prefix_button_col = st.columns([3, 1])
+    with prefix_pick_col:
+        prefix_choice = st.selectbox(
+            "Or select by exact path-prefix group (from the summary above -- not a text search, so "
+            "/collections/x/products/y is never pulled into /products by accident)",
+            ["(choose a prefix)"] + list(prefix_summary["Path prefix"]),
+        )
+    with prefix_button_col:
+        st.write("")
+        if st.button("Select this group", disabled=prefix_choice == "(choose a prefix)"):
+            st.session_state.bulk_selected_paths = [
+                p for p in all_old_paths if _is_in_path_prefix(p, prefix_choice)
+            ]
+            st.rerun()
 
     selected_paths = st.multiselect("Old paths to bulk-update", all_old_paths, key="bulk_selected_paths")
 
