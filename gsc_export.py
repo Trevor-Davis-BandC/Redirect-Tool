@@ -34,7 +34,7 @@ import pandas as pd
 from sitemap import SitemapResult, _dedupe_and_truncate_urls
 from config import CRAWL_SKIP_EXTENSIONS
 
-_URL_COLUMN_NAMES = {"url", "page", "address", "old url", "page url"}
+_URL_COLUMN_NAMES = {"url", "page", "address", "old url", "page url", "landing page", "page path"}
 _STATUS_COLUMN_NAMES = {"status code", "status_code", "statuscode", "http status", "response code"}
 _CONTENT_TYPE_COLUMN_NAMES = {"content type", "content_type", "contenttype", "mime type", "mimetype"}
 
@@ -74,13 +74,28 @@ def _content_type_looks_like_html(value: str) -> bool:
     return not value or value.startswith(("text/html", "application/xhtml+xml"))
 
 
-def parse_gsc_csv(file_bytes: bytes, filename: str, domain_or_url: str = "") -> SitemapResult:
-    """Parse a GSC (or Screaming Frog, etc.) URL-list CSV export."""
+def _strip_leading_comment_lines(file_bytes: bytes) -> bytes:
+    """GA4 exports open with "# ---" comment lines before the header row."""
+    if not file_bytes.lstrip(b"\xef\xbb\xbf \t\r\n").startswith(b"#"):
+        return file_bytes
+    lines = file_bytes.decode("utf-8-sig", errors="replace").splitlines()
+    start = 0
+    while start < len(lines) and (not lines[start].strip() or lines[start].lstrip().startswith("#")):
+        start += 1
+    return "\n".join(lines[start:]).encode("utf-8")
+
+
+def parse_gsc_csv(file_bytes: bytes, filename: str, domain_or_url: str = "", base_url: str = "") -> SitemapResult:
+    """Parse a GSC (or Screaming Frog, GA4, etc.) URL-list CSV export.
+
+    With `base_url` set, a bare path like "/about/" (what GA4's landing-page
+    report exports) is completed onto that site instead of being skipped.
+    """
     result = SitemapResult(domain=domain_or_url or filename)
     result.gsc_import_filename = filename
 
     try:
-        df = pd.read_csv(io.BytesIO(file_bytes), dtype=str, keep_default_na=False)
+        df = pd.read_csv(io.BytesIO(_strip_leading_comment_lines(file_bytes)), dtype=str, keep_default_na=False)
     except Exception as exc:
         result.errors.append(f"Could not read '{filename}' as a CSV file: {exc}")
         return result
@@ -111,6 +126,8 @@ def parse_gsc_csv(file_bytes: bytes, filename: str, domain_or_url: str = "") -> 
         value = (row[url_column] or "").strip()
         if not value:
             continue
+        if base_url and value.startswith("/") and not value.startswith("//"):
+            value = base_url.rstrip("/") + value
         if not _is_real_url(value):
             skipped.append(value)
             continue

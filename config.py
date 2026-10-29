@@ -60,6 +60,14 @@ WAYBACK_SKIP_PATH_PREFIXES = (
     "/cgi-bin/",
 )
 
+# --- Post-launch audit (checks which old URLs actually 404 on the live site) ---
+# Every checked URL is a real request against the client's live site, so the
+# list is capped and fetched by a small pool rather than all at once.
+AUDIT_MAX_URLS = 1000
+AUDIT_MAX_WORKERS = 6
+AUDIT_MAX_REDIRECT_HOPS = 5
+AUDIT_TIME_BUDGET_SECONDS = 240
+
 # --- Matching thresholds ---
 EXACT_PATH_CONFIDENCE = 100
 EXACT_SLUG_CONFIDENCE_MAX = 96

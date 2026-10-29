@@ -144,3 +144,22 @@ def test_screaming_frog_export_all_filtered_out_gives_friendly_error():
 
     assert result.urls == []
     assert result.errors
+
+
+def test_base_url_completes_bare_paths_from_a_ga4_landing_page_export():
+    csv = (
+        b"# ----------------------------------------\n"
+        b"# Landing page report\n"
+        b"# ----------------------------------------\n"
+        b"Landing page,Sessions\n"
+        b"/,120\n"
+        b"/about/,40\n"
+        b"(not set),3\n"
+    )
+    result = parse_gsc_csv(csv, "ga4.csv", "example.com", base_url="https://www.example.com")
+    assert result.urls == ["https://www.example.com/", "https://www.example.com/about/"]
+
+
+def test_bare_paths_are_still_skipped_without_a_base_url():
+    result = parse_gsc_csv(b"URL\n/about/\nhttps://example.com/x\n", "x.csv", "example.com")
+    assert result.urls == ["https://example.com/x"]

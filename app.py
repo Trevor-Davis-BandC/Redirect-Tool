@@ -36,6 +36,15 @@ from sitemap import discover_and_parse_sitemap, parse_uploaded_sitemap
 from crawler import crawl_site_links
 from gsc_export import parse_gsc_csv
 from wayback import fetch_wayback_urls
+from audit import (
+    VERDICT_BROKEN,
+    VERDICT_LIVE,
+    VERDICT_REDIRECTS,
+    VERDICT_UNCHECKED,
+    audit_urls,
+    gather_old_urls,
+    live_origin,
+)
 from matcher import generate_redirect_suggestions
 from url_normalizer import build_normalized_url, normalize_path
 from validator import validate_redirects
@@ -80,9 +89,11 @@ PAGE_LABELS = {
 
 PROJECT_MODE_MIGRATION = "migration"
 PROJECT_MODE_GSC = "gsc"
+PROJECT_MODE_AUDIT = "audit"
 PROJECT_MODE_OPTIONS = {
     PROJECT_MODE_MIGRATION: "Site Migration (old site -> new site)",
     PROJECT_MODE_GSC: "GSC 404 Cleanup (redirect a live site's 404s)",
+    PROJECT_MODE_AUDIT: "Post-Launch Audit (find old URLs that now 404)",
 }
 
 
@@ -247,6 +258,8 @@ def init_session_state() -> None:
         "last_bulk_update_count": None,
         "last_prefix_selection_count": None,
         "last_prefix_selection_name": None,
+        "audit_result": None,
+        "audit_source_counts": {},
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -357,7 +370,10 @@ def render_new_project_page() -> None:
             "a redirect for every old URL. *GSC 404 Cleanup* instead takes a list of already-known 404s "
             "(from Google Search Console or a similar export) and matches each one against a single "
             "live site's own sitemap -- use this when the site itself isn't changing, you just need to "
-            "clean up a pile of broken links.\n\n"
+            "clean up a pile of broken links. *Post-Launch Audit* is for a site that already launched "
+            "before ThreeOhOne was run, so the old site is gone and only the live one remains: it "
+            "gathers old URLs from the Wayback Machine (plus anything you paste or upload), checks "
+            "each one against the live site, and builds redirects for only the ones that now 404.\n\n"
             "**Finding the old site's URLs -- four ways, in order of how much they rely on the old site "
             "still being reachable:**\n"
             "- *Just enter the domain* -- the normal case. ThreeOhOne looks for a sitemap automatically, "
@@ -372,13 +388,20 @@ def render_new_project_page() -> None:
             "say), or when you've already got a crawl done and don't want to redo it."
         )
 
+    # The radio's own widget key is wiped whenever this page isn't rendered, so
+    # the chosen mode is copied into a plain session key that survives the
+    # Discovery/Review/Export pages.
+    mode_keys = list(PROJECT_MODE_OPTIONS.keys())
+    current_mode = st.session_state.project_mode
     mode = st.radio(
         "Project type",
-        list(PROJECT_MODE_OPTIONS.keys()),
+        mode_keys,
+        index=mode_keys.index(current_mode) if current_mode in mode_keys else 0,
         format_func=lambda m: PROJECT_MODE_OPTIONS[m],
         horizontal=True,
-        key="project_mode",
+        key="project_mode_choice",
     )
+    st.session_state.project_mode = mode
 
     if mode == PROJECT_MODE_MIGRATION:
         st.write(
@@ -387,6 +410,14 @@ def render_new_project_page() -> None:
             "site, upload a saved sitemap XML file directly (useful if the old site is no longer live), "
             "or a URL list CSV exported from Screaming Frog or a similar crawler (useful for a huge or "
             "slow site that's better crawled from your own machine)."
+        )
+    elif mode == PROJECT_MODE_AUDIT:
+        st.write(
+            "For a site that has already launched. ThreeOhOne gathers the old site's URLs -- from the "
+            "Wayback Machine, plus any URLs you paste or a CSV you upload (Google Search Console, GA4 "
+            "landing pages, Screaming Frog) -- then checks each one against the live site and keeps "
+            "only the ones that are actually broken. Pages that still load, or already redirect "
+            "somewhere that works, are left alone."
         )
     else:
         st.write(
@@ -430,6 +461,31 @@ def render_new_project_page() -> None:
                 new_override = st.text_input(
                     "New sitemap URL override (optional)", value=st.session_state.new_sitemap_override
                 )
+        elif mode == PROJECT_MODE_AUDIT:
+            new_domain = st.text_input(
+                "Live site domain",
+                value=st.session_state.new_domain,
+                placeholder="yoursite.com",
+                help="The live site is both where old URLs get checked and where redirects can point.",
+            )
+            new_override = st.text_input(
+                "Sitemap URL override (optional)", value=st.session_state.new_sitemap_override
+            )
+            audit_wayback = st.checkbox(
+                "Look up pages the Wayback Machine archived for this domain (recommended)", value=True
+            )
+            audit_pasted = st.text_area(
+                "Known old URLs or paths (optional) -- one per line",
+                placeholder="/about\n/our-team\nhttps://www.yoursite.com/pricing",
+                help="Anything you already know is broken, e.g. what a client reported. These are listed first.",
+            )
+            audit_csv = st.file_uploader(
+                "Or upload a URL list CSV -- GSC, GA4 landing pages, Screaming Frog (optional)", type=["csv"]
+            )
+            old_domain = new_domain
+            old_override = ""
+            old_sitemap_file = None
+            old_url_list_csv = None
         else:
             new_domain = st.text_input(
                 "Site domain",
@@ -446,7 +502,10 @@ def render_new_project_page() -> None:
             old_sitemap_file = None
             old_url_list_csv = None
 
-        submit_label = "Find Sitemap and Match" if mode == PROJECT_MODE_GSC else "Find Sitemaps and Compare"
+        submit_label = {
+            PROJECT_MODE_GSC: "Find Sitemap and Match",
+            PROJECT_MODE_AUDIT: "Gather Old URLs",
+        }.get(mode, "Find Sitemaps and Compare")
         submitted = st.form_submit_button(submit_label, type="primary")
 
     if not submitted:
@@ -462,6 +521,11 @@ def render_new_project_page() -> None:
             )
         if not new_domain.strip():
             errors.append("The new website domain is required.")
+    elif mode == PROJECT_MODE_AUDIT:
+        if not new_domain.strip():
+            errors.append("The live site domain is required.")
+        if not audit_wayback and not audit_pasted.strip() and audit_csv is None:
+            errors.append("Turn on the Wayback Machine lookup, paste some URLs, or upload a URL list.")
     else:
         if not new_domain.strip():
             errors.append("The site domain is required.")
@@ -478,6 +542,38 @@ def render_new_project_page() -> None:
     st.session_state.new_domain = new_domain.strip()
     st.session_state.old_sitemap_override = old_override.strip()
     st.session_state.new_sitemap_override = new_override.strip()
+
+    if mode == PROJECT_MODE_AUDIT:
+        with st.spinner("Looking for the live site's sitemap..."):
+            new_result = discover_and_parse_sitemap(new_domain.strip(), new_override.strip() or None)
+        try:
+            origin = live_origin(new_result, new_domain.strip())
+        except ValueError as exc:
+            st.error(str(exc))
+            return
+        csv_result = None
+        if audit_csv is not None:
+            csv_result = parse_gsc_csv(
+                audit_csv.getvalue(), audit_csv.name, new_domain.strip(), base_url=origin
+            )
+        spinner_text = "Gathering old URLs"
+        if audit_wayback:
+            spinner_text += " (the Wayback Machine lookup can take up to a minute)"
+        with st.spinner(spinner_text + "..."):
+            gathered = gather_old_urls(
+                new_domain.strip(),
+                origin,
+                include_wayback=audit_wayback,
+                csv_result=csv_result,
+                pasted_text=audit_pasted,
+            )
+        st.session_state.old_sitemap_result = gathered.result
+        st.session_state.new_sitemap_result = new_result
+        st.session_state.audit_source_counts = gathered.source_counts
+        st.session_state.audit_result = None
+        _apply_new_site_urls(new_result.urls)
+        st.session_state.page = PAGE_DISCOVERY
+        st.rerun()
 
     if mode == PROJECT_MODE_GSC:
         with st.spinner("Parsing the GSC export..."):
@@ -524,7 +620,11 @@ def render_discovery_page() -> None:
             "on top of what's already there, rather than replacing it.\n\n"
             "**If a site has no sitemap at all,** a \"Crawl the site's links instead\" and a \"Check the "
             "Wayback Machine instead\" button both appear -- crawl for a live site with working "
-            "internal navigation, Wayback for a dead one (expired domain, cancelled hosting)."
+            "internal navigation, Wayback for a dead one (expired domain, cancelled hosting).\n\n"
+            "**In a Post-Launch Audit,** the left side lists the old URLs gathered from your chosen "
+            "sources, and the right side is the live site. Below them, *Check live status* requests each "
+            "old URL on the live site and sorts it: still live, already redirects, broken (404/410), or "
+            "couldn't check. Only the broken ones go on to matching."
         )
 
     old_result = st.session_state.old_sitemap_result
@@ -538,17 +638,26 @@ def render_discovery_page() -> None:
         return
 
     is_gsc_mode = st.session_state.project_mode == PROJECT_MODE_GSC
+    is_audit_mode = st.session_state.project_mode == PROJECT_MODE_AUDIT
     old_label = "404 URLs (Google Search Console)" if is_gsc_mode else "Old website"
+    new_label = "New website"
+    if is_audit_mode:
+        old_label = "Old URLs gathered"
+        new_label = "Live website"
 
     col1, col2 = st.columns(2)
     sides = (
         (col1, old_label, old_result, "old", st.session_state.old_domain),
-        (col2, "New website", new_result, "new", st.session_state.new_domain),
+        (col2, new_label, new_result, "new", st.session_state.new_domain),
     )
     for col, label, result, side, domain in sides:
         with col:
             st.subheader(label)
-            if result.sitemap_url:
+            if side == "old" and is_audit_mode:
+                counts = st.session_state.audit_source_counts
+                gathered_from = ", ".join(f"{name} ({n})" for name, n in counts.items()) or "nothing"
+                st.write(f"**Old URLs gathered from:** {gathered_from}")
+            elif result.sitemap_url:
                 st.write(f"**Sitemap found:** {result.sitemap_url}")
             elif result.crawled_from:
                 st.write(f"**No sitemap -- pages found by crawling from:** {result.crawled_from}")
@@ -569,7 +678,7 @@ def render_discovery_page() -> None:
             if result.warnings:
                 for warn in result.warnings:
                     st.warning(warn)
-            if not result.urls and domain and not (side == "old" and is_gsc_mode):
+            if not result.urls and domain and not (side == "old" and (is_gsc_mode or is_audit_mode)):
                 st.caption(
                     "No sitemap was found. As a fallback, ThreeOhOne can crawl the site's actual "
                     "pages by following internal links from the homepage, the way Screaming Frog does."
@@ -605,7 +714,7 @@ def render_discovery_page() -> None:
                 and not result.wayback_source
                 and not result.uploaded_filename
                 and not result.gsc_import_filename
-                and not (side == "old" and is_gsc_mode)
+                and not (side == "old" and (is_gsc_mode or is_audit_mode))
             ):
                 st.caption(
                     "Sitemap only reflects what's live right now. If this site may have had more "
@@ -634,6 +743,10 @@ def render_discovery_page() -> None:
             st.rerun()
         return
 
+    if is_audit_mode:
+        _render_audit_section(old_result, new_result)
+        return
+
     st.markdown("---")
     back_col, next_col = st.columns([1, 3])
     with back_col:
@@ -642,28 +755,124 @@ def render_discovery_page() -> None:
             st.rerun()
     with next_col:
         if st.button("Generate Redirect Suggestions", type="primary"):
-            with st.spinner("Comparing URLs and generating redirect suggestions..."):
-                results = generate_redirect_suggestions(old_result.urls, new_result.urls)
+            _generate_and_open_review(old_result.urls, new_result.urls)
 
-            rows = []
-            for r in results:
-                best = r.best
-                rows.append(
-                    {
-                        COL_INCLUDE: r.include_default,
-                        COL_OLD_URL: r.old_url,
-                        COL_OLD_PATH: r.old_path,
-                        COL_NEW_URL: best.new_url,
-                        COL_NEW_PATH: best.new_path,
-                        COL_REDIRECT_TYPE: REDIRECT_TYPE_PERMANENT,
-                        COL_STATUS: r.status_default,
-                        COL_NOTES: "",
-                    }
-                )
 
-            st.session_state.redirect_df = pd.DataFrame(rows, columns=ALL_COLUMNS)
-            st.session_state.page = PAGE_REVIEW
+def _generate_and_open_review(old_urls: list[str], new_urls: list[str]) -> None:
+    with st.spinner("Comparing URLs and generating redirect suggestions..."):
+        results = generate_redirect_suggestions(old_urls, new_urls)
+
+    rows = []
+    for r in results:
+        best = r.best
+        rows.append(
+            {
+                COL_INCLUDE: r.include_default,
+                COL_OLD_URL: r.old_url,
+                COL_OLD_PATH: r.old_path,
+                COL_NEW_URL: best.new_url,
+                COL_NEW_PATH: best.new_path,
+                COL_REDIRECT_TYPE: REDIRECT_TYPE_PERMANENT,
+                COL_STATUS: r.status_default,
+                COL_NOTES: "",
+            }
+        )
+
+    st.session_state.redirect_df = pd.DataFrame(rows, columns=ALL_COLUMNS)
+    st.session_state.page = PAGE_REVIEW
+    st.rerun()
+
+
+def _render_audit_section(old_result, new_result) -> None:
+    st.markdown("---")
+    st.subheader("Check which old URLs are actually broken")
+
+    origin = live_origin(new_result, st.session_state.new_domain)
+    already_listed = sum(
+        1 for u in old_result.urls
+        if build_normalized_url(u).normalized_path in st.session_state.new_sitemap_paths
+    )
+    to_request = len(old_result.urls) - already_listed
+    st.write(
+        f"ThreeOhOne will request each of the {len(old_result.urls)} old URLs on **{origin}** to see what it does "
+        f"today. {already_listed} are already in the live sitemap, so only {to_request} need a real request. "
+        "Only the live site is contacted."
+    )
+
+    audit_result = st.session_state.audit_result
+    if st.button(f"Check live status of {len(old_result.urls)} old URLs", type="primary"):
+        bar = st.progress(0.0, text="Starting...")
+
+        def _on_progress(done: int, total: int) -> None:
+            bar.progress(done / total if total else 1.0, text=f"Checked {done} of {total}")
+
+        st.session_state.audit_result = audit_urls(
+            old_result.urls, origin, st.session_state.new_sitemap_paths, progress=_on_progress
+        )
+        bar.empty()
+        st.rerun()
+
+    back_col, _ = st.columns([1, 3])
+    with back_col:
+        if st.button("Back to New Project"):
+            st.session_state.page = PAGE_NEW_PROJECT
             st.rerun()
+
+    if audit_result is None:
+        return
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Broken (404/410)", audit_result.count(VERDICT_BROKEN))
+    m2.metric("Already redirects", audit_result.count(VERDICT_REDIRECTS))
+    m3.metric("Still live", audit_result.count(VERDICT_LIVE))
+    m4.metric("Couldn't check", audit_result.count(VERDICT_UNCHECKED))
+
+    if audit_result.blocked_suspected:
+        st.error(
+            "The live site is refusing most of ThreeOhOne's requests (HTTP 401/403/429), so these results "
+            "aren't reliable. Check the old URLs another way -- for example Screaming Frog in List mode -- "
+            "and upload the result as a URL list CSV."
+        )
+    if audit_result.truncated:
+        st.warning(
+            f"Only the first {len(audit_result.checks)} URLs were checked; {audit_result.truncated} more were skipped "
+            "to keep the number of requests against the live site reasonable."
+        )
+
+    verdict_order = {VERDICT_BROKEN: 0, VERDICT_UNCHECKED: 1, VERDICT_REDIRECTS: 2, VERDICT_LIVE: 3}
+    table = pd.DataFrame(
+        [
+            {
+                "Old URL": c.old_url,
+                "Result": c.verdict,
+                "HTTP": str(c.status_code) if c.status_code is not None else "",
+                "Goes to": c.final_url if c.verdict == VERDICT_REDIRECTS else "",
+                "Detail": c.detail,
+            }
+            for c in sorted(audit_result.checks, key=lambda c: verdict_order[c.verdict])
+        ]
+    )
+    with st.expander(f"All {len(audit_result.checks)} results", expanded=False):
+        st.dataframe(table, hide_index=True, width="stretch")
+
+    include_unchecked = True
+    if audit_result.count(VERDICT_UNCHECKED):
+        include_unchecked = st.checkbox(
+            f"Also build redirects for the {audit_result.count(VERDICT_UNCHECKED)} URL(s) that couldn't be checked",
+            value=True,
+            help="They may be fine -- a timeout or a blocked request says nothing about the page itself. "
+            "You can exclude any of them on the review page.",
+        )
+
+    targets = audit_result.urls_needing_redirect(include_unchecked)
+    if not targets:
+        st.success(
+            "No broken URLs found -- every old URL either still loads or already redirects to a working page. "
+            "Nothing needs to be exported."
+        )
+        return
+    if st.button(f"Generate Redirect Suggestions for {len(targets)} URL(s)", type="primary"):
+        _generate_and_open_review(targets, new_result.urls)
 
 
 # ---------------------------------------------------------------------------
