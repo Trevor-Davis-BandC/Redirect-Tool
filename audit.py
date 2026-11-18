@@ -24,6 +24,7 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 import requests
 
 from config import (
+    AUDIT_CRAWL_TIME_BUDGET_SECONDS,
     AUDIT_MAX_REDIRECT_HOPS,
     AUDIT_MAX_URLS,
     AUDIT_MAX_WORKERS,
@@ -32,6 +33,7 @@ from config import (
     REQUEST_TIMEOUT_SECONDS,
     USER_AGENT,
 )
+from crawler import crawl_site_links
 from sitemap import (
     BlockedUrlError,
     SitemapResult,
@@ -51,6 +53,7 @@ VERDICT_UNCHECKED = "Couldn't check"
 SOURCE_WAYBACK = "Wayback Machine"
 SOURCE_CSV = "Uploaded URL list"
 SOURCE_PASTED = "Pasted URLs"
+SOURCE_CRAWL = "Live-site crawl"
 
 def _site_key(host: str) -> str:
     """A host reduced to what identifies the site: lowercase, no port, no www."""
@@ -155,6 +158,9 @@ class GatheredUrls:
     result: SitemapResult
     source_counts: dict[str, int] = field(default_factory=dict)
     skipped_off_site: int = 0
+    # Normalized path -> the live page whose link led to it (crawl source only).
+    linked_from: dict[str, str] = field(default_factory=dict)
+    crawled_pages: int = 0
 
 
 def gather_old_urls(
@@ -162,26 +168,33 @@ def gather_old_urls(
     origin: str,
     *,
     include_wayback: bool = True,
+    include_crawl: bool = False,
     csv_result: SitemapResult | None = None,
     pasted_text: str = "",
 ) -> GatheredUrls:
     """Merge every available source of old URLs into one de-duplicated list
     of live-origin URLs. Pasted URLs come first so a client's specific
-    complaints sit at the top of the review table."""
+    complaints sit at the top of the review table.
+
+    The live-site crawl contributes only the links that answered 404/410 as
+    it walked the site, along with the page each one was linked from."""
     result = SitemapResult(domain=typed_domain)
     counts: dict[str, int] = {}
     skipped = 0
     all_urls: list[str] = []
+    linked_from: dict[str, str] = {}
 
-    def _absorb(label: str, raw_urls: list[str]) -> None:
+    def _absorb(label: str, raw_urls: list[str], referrers: dict[str, str] | None = None) -> None:
         nonlocal skipped
         kept = []
         for raw in raw_urls:
             live = to_live_url(raw, origin)
             if live is None:
                 skipped += 1
-            else:
-                kept.append(live)
+                continue
+            kept.append(live)
+            if referrers and referrers.get(raw):
+                linked_from.setdefault(normalize_path(urlsplit(live).path), referrers[raw])
         counts[label] = len(kept)
         all_urls.extend(kept)
 
@@ -196,13 +209,40 @@ def gather_old_urls(
         if csv_result.urls:
             _absorb(SOURCE_CSV, csv_result.urls)
 
-    if include_wayback:
-        wayback = fetch_wayback_variants(typed_domain)
+    # The two network-heavy sources are independent, so run them side by side.
+    broken_links: dict[str, str] = {}
+    wayback = crawl = None
+    if include_wayback or include_crawl:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            wayback_future = pool.submit(fetch_wayback_variants, typed_domain) if include_wayback else None
+            crawl_future = (
+                pool.submit(
+                    crawl_site_links,
+                    origin,
+                    broken_out=broken_links,
+                    time_budget=AUDIT_CRAWL_TIME_BUDGET_SECONDS,
+                )
+                if include_crawl
+                else None
+            )
+            wayback = wayback_future.result() if wayback_future else None
+            crawl = crawl_future.result() if crawl_future else None
+
+    if wayback is not None:
         if wayback.urls:
             result.wayback_source = wayback.wayback_source
             _absorb(SOURCE_WAYBACK, wayback.urls)
         else:
             result.warnings.extend(wayback.errors or [f"No archived pages were found for {typed_domain}."])
+
+    crawled_pages = 0
+    if crawl is not None:
+        crawled_pages = len(crawl.urls)
+        result.warnings.extend(crawl.warnings)
+        if crawl.errors:
+            result.warnings.append(f"The live site couldn't be crawled: {crawl.errors[0]}")
+        else:
+            _absorb(SOURCE_CRAWL, list(broken_links), referrers=broken_links)
 
     if skipped:
         result.warnings.append(
@@ -214,11 +254,18 @@ def gather_old_urls(
         # A partial failure (e.g. a bad CSV row) is only a warning once real URLs exist.
         result.warnings.extend(result.errors)
         result.errors = []
-    elif not result.errors:
+    elif not result.errors and not (crawl is not None and not crawl.errors):
         result.errors.append(
-            "No old URLs could be gathered. Turn on the Wayback Machine lookup, paste some URLs, or upload a URL list."
+            "No old URLs could be gathered. Turn on the Wayback Machine lookup or the live-site crawl, paste some URLs, "
+            "or upload a URL list."
         )
-    return GatheredUrls(result=result, source_counts=counts, skipped_off_site=skipped)
+    return GatheredUrls(
+        result=result,
+        source_counts=counts,
+        skipped_off_site=skipped,
+        linked_from=linked_from,
+        crawled_pages=crawled_pages,
+    )
 
 
 # ---------------------------------------------------------------------------

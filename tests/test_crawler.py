@@ -183,3 +183,70 @@ def test_crawl_recovers_pages_hidden_in_embedded_state(monkeypatch):
 
     assert "https://example.com/parent/child" in result.urls
     assert any("embedded" in w.lower() for w in result.warnings)
+
+
+def test_broken_links_are_recorded_with_the_page_that_linked_to_them(monkeypatch):
+    home = _page(
+        '<html><body><a href="/about-us">About</a> <a href="/old-page">Old</a> <a href="/gone">Gone</a></body></html>',
+        "https://example.com/",
+    )
+    about = _page('<html><body><a href="/old-page">Old again</a></body></html>', "https://example.com/about-us")
+    url_map = {
+        "https://example.com/robots.txt": FakeResponse(404, b"", "text/plain"),
+        "https://example.com/": home,
+        "https://example.com/about-us": about,
+        "https://example.com/old-page": FakeResponse(404, b"Not Found", "text/html", "https://example.com/old-page"),
+        "https://example.com/gone": FakeResponse(410, b"Gone", "text/html", "https://example.com/gone"),
+    }
+    monkeypatch.setattr(crawler, "_fetch", make_fake_fetch(url_map))
+
+    broken = {}
+    result = crawler.crawl_site_links("example.com", broken_out=broken)
+
+    assert broken == {
+        "https://example.com/old-page": "https://example.com/",
+        "https://example.com/gone": "https://example.com/",
+    }
+    assert set(result.urls) == {"https://example.com/", "https://example.com/about-us"}
+
+
+def test_other_errors_are_not_reported_as_broken_links(monkeypatch):
+    home = _page('<html><body><a href="/private">P</a><a href="/down">D</a></body></html>', "https://example.com/")
+    url_map = {
+        "https://example.com/robots.txt": FakeResponse(404, b"", "text/plain"),
+        "https://example.com/": home,
+        "https://example.com/private": FakeResponse(403, b"", "text/html", "https://example.com/private"),
+        "https://example.com/down": FakeResponse(503, b"", "text/html", "https://example.com/down"),
+    }
+    monkeypatch.setattr(crawler, "_fetch", make_fake_fetch(url_map))
+    broken = {}
+    crawler.crawl_site_links("example.com", broken_out=broken)
+    assert broken == {}
+
+
+def test_crawl_without_broken_out_behaves_as_before(monkeypatch):
+    home = _page('<html><body><a href="/missing">M</a></body></html>', "https://example.com/")
+    url_map = {"https://example.com/robots.txt": FakeResponse(404, b"", "text/plain"), "https://example.com/": home}
+    monkeypatch.setattr(crawler, "_fetch", make_fake_fetch(url_map))
+    result = crawler.crawl_site_links("example.com")
+    assert result.urls == ["https://example.com/"]
+
+
+def test_time_budget_stops_the_crawl_and_keeps_what_was_found(monkeypatch):
+    home = _page('<html><body><a href="/a">A</a><a href="/b">B</a></body></html>', "https://example.com/")
+    a = _page("<html><body>a</body></html>", "https://example.com/a")
+    url_map = {
+        "https://example.com/robots.txt": FakeResponse(404, b"", "text/plain"),
+        "https://example.com/": home,
+        "https://example.com/a": a,
+        "https://example.com/b": _page("<html><body>b</body></html>", "https://example.com/b"),
+    }
+    monkeypatch.setattr(crawler, "_fetch", make_fake_fetch(url_map))
+    clock = iter([0.0, 0.0, 10.0, 10.0, 10.0, 10.0])
+    monkeypatch.setattr(crawler, "_now", lambda: next(clock))
+
+    result = crawler.crawl_site_links("example.com", time_budget=5)
+
+    assert result.urls == ["https://example.com/"]
+    assert result.truncated
+    assert any("Stopped crawling after 5 seconds" in w for w in result.warnings)

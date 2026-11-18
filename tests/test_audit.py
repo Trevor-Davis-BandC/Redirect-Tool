@@ -283,3 +283,63 @@ def test_a_redirect_carrying_a_port_still_counts_as_same_site(monkeypatch):
     table = {f"{ORIGIN}/a": FakeResp(301, "https://www.example.com:443/b"), "https://www.example.com:443/b": FakeResp(200)}
     monkeypatch.setattr(audit, "_fetch_once", fake_fetch(table))
     assert check_url(f"{ORIGIN}/a", ROOT, None).verdict == VERDICT_REDIRECTS
+
+
+def _fake_crawl(broken, pages=("https://www.example.com/",), errors=None, warnings=None):
+    def _crawl(origin, broken_out=None, time_budget=None):
+        if broken_out is not None:
+            broken_out.update(broken)
+        r = SitemapResult(domain=origin)
+        r.urls = list(pages)
+        r.errors = list(errors or [])
+        r.warnings = list(warnings or [])
+        return r
+    return _crawl
+
+
+def test_crawl_source_adds_broken_links_and_where_they_were_linked(monkeypatch):
+    monkeypatch.setattr(
+        audit, "crawl_site_links",
+        _fake_crawl({"https://www.example.com/old-page": "https://www.example.com/about-us"}, pages=("a", "b", "c")),
+    )
+    gathered = gather_old_urls("example.com", ORIGIN, include_wayback=False, include_crawl=True)
+
+    assert gathered.result.urls == [f"{ORIGIN}/old-page"]
+    assert gathered.source_counts == {"Live-site crawl": 1}
+    assert gathered.linked_from == {"/old-page": "https://www.example.com/about-us"}
+    assert gathered.crawled_pages == 3
+    assert not gathered.result.errors
+
+
+def test_a_clean_crawl_with_nothing_broken_is_not_an_error(monkeypatch):
+    monkeypatch.setattr(audit, "crawl_site_links", _fake_crawl({}, pages=("a", "b")))
+    gathered = gather_old_urls("example.com", ORIGIN, include_wayback=False, include_crawl=True)
+    assert gathered.result.urls == []
+    assert gathered.result.errors == []
+    assert gathered.source_counts == {"Live-site crawl": 0}
+    assert gathered.crawled_pages == 2
+
+
+def test_a_failed_crawl_is_a_warning_when_other_sources_exist(monkeypatch):
+    monkeypatch.setattr(audit, "crawl_site_links", _fake_crawl({}, pages=(), errors=["No pages could be reached."]))
+    gathered = gather_old_urls("example.com", ORIGIN, include_wayback=False, include_crawl=True, pasted_text="/about")
+    assert gathered.result.urls == [f"{ORIGIN}/about"]
+    assert not gathered.result.errors
+    assert any("couldn't be crawled" in w for w in gathered.result.warnings)
+
+
+def test_a_failed_crawl_alone_is_an_error(monkeypatch):
+    monkeypatch.setattr(audit, "crawl_site_links", _fake_crawl({}, pages=(), errors=["No pages could be reached."]))
+    gathered = gather_old_urls("example.com", ORIGIN, include_wayback=False, include_crawl=True)
+    assert gathered.result.errors
+
+
+def test_crawl_and_wayback_merge_without_double_counting(monkeypatch):
+    monkeypatch.setattr(
+        audit, "crawl_site_links", _fake_crawl({"https://www.example.com/shared": "https://www.example.com/"})
+    )
+    monkeypatch.setattr(audit, "fetch_wayback_urls", lambda host: _wayback(["http://example.com/shared/", "http://example.com/only-archived"])(host) if host == "example.com" else _wayback([])(host))
+    gathered = gather_old_urls("example.com", ORIGIN, include_wayback=True, include_crawl=True)
+    # First-seen spelling wins (the archived "/shared/"); the crawl's "/shared" is the same page.
+    assert sorted(u.replace(ORIGIN, "") for u in gathered.result.urls) == ["/only-archived", "/shared/"]
+    assert gathered.linked_from == {"/shared": "https://www.example.com/"}

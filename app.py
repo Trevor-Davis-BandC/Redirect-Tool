@@ -260,6 +260,8 @@ def init_session_state() -> None:
         "last_prefix_selection_name": None,
         "audit_result": None,
         "audit_source_counts": {},
+        "audit_linked_from": {},
+        "audit_crawled_pages": 0,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -372,8 +374,9 @@ def render_new_project_page() -> None:
             "live site's own sitemap -- use this when the site itself isn't changing, you just need to "
             "clean up a pile of broken links. *Post-Launch Audit* is for a site that already launched "
             "before ThreeOhOne was run, so the old site is gone and only the live one remains: it "
-            "gathers old URLs from the Wayback Machine (plus anything you paste or upload), checks "
-            "each one against the live site, and builds redirects for only the ones that now 404.\n\n"
+            "gathers old URLs by crawling the live site for broken internal links and from the Wayback "
+            "Machine (plus anything you paste or upload), checks each one against the live site, and "
+            "builds redirects for only the ones that now 404.\n\n"
             "**Finding the old site's URLs -- four ways, in order of how much they rely on the old site "
             "still being reachable:**\n"
             "- *Just enter the domain* -- the normal case. ThreeOhOne looks for a sitemap automatically, "
@@ -413,11 +416,11 @@ def render_new_project_page() -> None:
         )
     elif mode == PROJECT_MODE_AUDIT:
         st.write(
-            "For a site that has already launched. ThreeOhOne gathers the old site's URLs -- from the "
-            "Wayback Machine, plus any URLs you paste or a CSV you upload (Google Search Console, GA4 "
-            "landing pages, Screaming Frog) -- then checks each one against the live site and keeps "
-            "only the ones that are actually broken. Pages that still load, or already redirect "
-            "somewhere that works, are left alone."
+            "For a site that has already launched. ThreeOhOne finds URLs that may now be broken -- by "
+            "crawling the live site's own links, from the Wayback Machine, and from any URLs you paste "
+            "or a CSV you upload (Google Search Console, GA4 landing pages, Screaming Frog) -- then "
+            "checks each one against the live site and keeps only the ones that are actually broken. "
+            "Pages that still load, or already redirect somewhere that works, are left alone."
         )
     else:
         st.write(
@@ -470,6 +473,12 @@ def render_new_project_page() -> None:
             )
             new_override = st.text_input(
                 "Sitemap URL override (optional)", value=st.session_state.new_sitemap_override
+            )
+            audit_crawl = st.checkbox(
+                "Crawl the live site and find its broken internal links (recommended)",
+                value=True,
+                help="Follows the site's own links, up to 300 pages, and flags any that lead to a 404. "
+                "Can take a minute or two. Shows which page each broken link is on.",
             )
             audit_wayback = st.checkbox(
                 "Look up pages the Wayback Machine archived for this domain (recommended)", value=True
@@ -524,8 +533,8 @@ def render_new_project_page() -> None:
     elif mode == PROJECT_MODE_AUDIT:
         if not new_domain.strip():
             errors.append("The live site domain is required.")
-        if not audit_wayback and not audit_pasted.strip() and audit_csv is None:
-            errors.append("Turn on the Wayback Machine lookup, paste some URLs, or upload a URL list.")
+        if not audit_crawl and not audit_wayback and not audit_pasted.strip() and audit_csv is None:
+            errors.append("Turn on the live-site crawl or the Wayback Machine lookup, paste some URLs, or upload a URL list.")
     else:
         if not new_domain.strip():
             errors.append("The site domain is required.")
@@ -557,19 +566,22 @@ def render_new_project_page() -> None:
                 audit_csv.getvalue(), audit_csv.name, new_domain.strip(), base_url=origin
             )
         spinner_text = "Gathering old URLs"
-        if audit_wayback:
-            spinner_text += " (the Wayback Machine lookup can take up to a minute)"
+        if audit_crawl or audit_wayback:
+            spinner_text += " (crawling and the Wayback Machine lookup can each take a minute or two)"
         with st.spinner(spinner_text + "..."):
             gathered = gather_old_urls(
                 new_domain.strip(),
                 origin,
                 include_wayback=audit_wayback,
+                include_crawl=audit_crawl,
                 csv_result=csv_result,
                 pasted_text=audit_pasted,
             )
         st.session_state.old_sitemap_result = gathered.result
         st.session_state.new_sitemap_result = new_result
         st.session_state.audit_source_counts = gathered.source_counts
+        st.session_state.audit_linked_from = gathered.linked_from
+        st.session_state.audit_crawled_pages = gathered.crawled_pages
         st.session_state.audit_result = None
         _apply_new_site_urls(new_result.urls)
         st.session_state.page = PAGE_DISCOVERY
@@ -657,6 +669,8 @@ def render_discovery_page() -> None:
                 counts = st.session_state.audit_source_counts
                 gathered_from = ", ".join(f"{name} ({n})" for name, n in counts.items()) or "nothing"
                 st.write(f"**Old URLs gathered from:** {gathered_from}")
+                if st.session_state.audit_crawled_pages:
+                    st.caption(f"The crawl checked {st.session_state.audit_crawled_pages} pages on the live site.")
             elif result.sitemap_url:
                 st.write(f"**Sitemap found:** {result.sitemap_url}")
             elif result.crawled_from:
@@ -695,7 +709,8 @@ def render_discovery_page() -> None:
                             _apply_new_site_urls(crawl_result.urls)
                         st.rerun()
                 with fallback_col2:
-                    if st.button("Check the Wayback Machine instead", key=f"wayback_{side}"):
+                    # Archived pages must never become redirect targets in an audit.
+                    if not is_audit_mode and st.button("Check the Wayback Machine instead", key=f"wayback_{side}"):
                         with st.spinner(f"Looking up {domain} in the Wayback Machine (this can take up to a minute)..."):
                             wayback_result = fetch_wayback_urls(domain)
                         if side == "old":
@@ -715,6 +730,7 @@ def render_discovery_page() -> None:
                 and not result.uploaded_filename
                 and not result.gsc_import_filename
                 and not (side == "old" and (is_gsc_mode or is_audit_mode))
+                and not (side == "new" and is_audit_mode)
             ):
                 st.caption(
                     "Sitemap only reflects what's live right now. If this site may have had more "
@@ -730,6 +746,18 @@ def render_discovery_page() -> None:
                         st.session_state.new_sitemap_result = merged_result
                         _apply_new_site_urls(merged_result.urls)
                     st.rerun()
+
+    if is_audit_mode and not old_result.urls and not old_result.errors:
+        st.success(
+            "No broken links found. The crawl checked "
+            f"{st.session_state.audit_crawled_pages} pages and none linked to a 404. To look for older URLs "
+            "that are no longer linked anywhere, go back and also turn on the Wayback Machine lookup, "
+            "paste URLs, or upload a list."
+        )
+        if st.button("Back to New Project"):
+            st.session_state.page = PAGE_NEW_PROJECT
+            st.rerun()
+        return
 
     can_continue = bool(old_result.urls) and bool(new_result.urls)
 
@@ -840,6 +868,7 @@ def _render_audit_section(old_result, new_result) -> None:
         )
 
     verdict_order = {VERDICT_BROKEN: 0, VERDICT_UNCHECKED: 1, VERDICT_REDIRECTS: 2, VERDICT_LIVE: 3}
+    linked_from = st.session_state.audit_linked_from
     table = pd.DataFrame(
         [
             {
@@ -847,11 +876,14 @@ def _render_audit_section(old_result, new_result) -> None:
                 "Result": c.verdict,
                 "HTTP": str(c.status_code) if c.status_code is not None else "",
                 "Goes to": c.final_url if c.verdict == VERDICT_REDIRECTS else "",
+                "Linked from": linked_from.get(normalize_path(urlsplit(c.old_url).path), ""),
                 "Detail": c.detail,
             }
             for c in sorted(audit_result.checks, key=lambda c: verdict_order[c.verdict])
         ]
     )
+    if not (table["Linked from"] != "").any():
+        table = table.drop(columns=["Linked from"])
     with st.expander(f"All {len(audit_result.checks)} results", expanded=False):
         st.dataframe(table, hide_index=True, width="stretch")
 

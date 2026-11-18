@@ -15,6 +15,7 @@ a crawl result vs. a sitemap result.
 from __future__ import annotations
 
 import re
+import time
 from collections import deque
 from urllib.parse import urljoin, urlsplit
 
@@ -32,6 +33,11 @@ from sitemap import (
 )
 
 _SKIP_LINK_SCHEMES = ("#", "mailto:", "tel:", "javascript:")
+
+
+def _now() -> float:
+    return time.monotonic()
+
 
 # Some site builders (Nuxt/Vue-based ones in particular) render pages
 # server-side but build their navigation menu client-side from a state blob
@@ -108,8 +114,19 @@ def _extract_links(page_url: str, html: bytes) -> list[str]:
     return links
 
 
-def crawl_site_links(domain_or_url: str, max_pages: int = MAX_CRAWL_PAGES) -> SitemapResult:
-    """Crawl a site's internal links from its homepage as a sitemap fallback."""
+def crawl_site_links(
+    domain_or_url: str,
+    max_pages: int = MAX_CRAWL_PAGES,
+    broken_out: dict[str, str] | None = None,
+    time_budget: float | None = None,
+) -> SitemapResult:
+    """Crawl a site's internal links from its homepage as a sitemap fallback.
+
+    `broken_out`, when given, is filled with every link target that answered
+    404/410, mapped to the first page that linked to it -- the link as it was
+    written, not where a redirect ended up. `time_budget` stops the crawl
+    after that many seconds, keeping whatever was found.
+    """
     result = SitemapResult(domain=domain_or_url)
 
     try:
@@ -139,14 +156,20 @@ def crawl_site_links(domain_or_url: str, max_pages: int = MAX_CRAWL_PAGES) -> Si
     except (BlockedUrlError, requests.exceptions.RequestException):
         pass  # robots.txt is best-effort; crawling still proceeds without it
 
-    queue: deque[str] = deque([home_url])
+    queue: deque[tuple[str, str]] = deque([(home_url, "")])
     visited: set[str] = set()
     found_urls: list[str] = []
     seen_found: set[str] = set()
     embedded_state_links: set[str] = set()
 
+    started = _now()
+    timed_out = False
+
     while queue and len(found_urls) < max_pages:
-        url = queue.popleft()
+        if time_budget is not None and _now() - started > time_budget:
+            timed_out = True
+            break
+        url, referrer = queue.popleft()
         if url in visited:
             continue
         visited.add(url)
@@ -167,6 +190,8 @@ def crawl_site_links(domain_or_url: str, max_pages: int = MAX_CRAWL_PAGES) -> Si
             result.warnings.append(_friendly_request_error(exc, url))
             continue
 
+        if resp.status_code in (404, 410) and broken_out is not None:
+            broken_out.setdefault(url, referrer)
         if resp.status_code >= 400:
             continue
         if "html" not in resp.headers.get("Content-Type", "").lower():
@@ -183,7 +208,7 @@ def crawl_site_links(domain_or_url: str, max_pages: int = MAX_CRAWL_PAGES) -> Si
         embedded_state_links.update(embedded_links)
         for link in _extract_links(final_url, resp.content) + embedded_links:
             if link not in visited:
-                queue.append(link)
+                queue.append((link, final_url))
 
     result.urls = found_urls
     recovered = embedded_state_links & seen_found
@@ -194,7 +219,12 @@ def crawl_site_links(domain_or_url: str, max_pages: int = MAX_CRAWL_PAGES) -> Si
             "site builders)."
         )
 
-    if queue and len(result.urls) >= max_pages:
+    if timed_out:
+        result.truncated = True
+        result.warnings.append(
+            f"Stopped crawling after {time_budget:.0f} seconds; pages not reached by then were not checked."
+        )
+    elif queue and len(result.urls) >= max_pages:
         result.truncated = True
         result.warnings.append(
             f"Reached the maximum of {max_pages} crawled pages; some pages may not have been discovered."
