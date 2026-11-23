@@ -97,3 +97,16 @@ def test_report_handles_many_rows_per_section():
     pdf_bytes = build_redirect_report_pdf("Big Project", "oldsite.com", "newsite.com", df, validation)
     assert pdf_bytes.startswith(b"%PDF")
     assert pdf_bytes.rstrip().endswith(b"%%EOF")
+
+
+def test_report_builds_when_the_new_findings_are_present():
+    df = pd.DataFrame(
+        [_row("/a", "/b", STATUS_APPROVED), _row("/b", "/c", STATUS_APPROVED), _row("/index.php", "/", STATUS_APPROVED)]
+        + [_row(f"/gone-{i}", "/", STATUS_NEEDS_REVIEW) for i in range(3)]
+    )
+    report = validate_redirects(df, "newsite.com")
+    assert report.redirect_chains and report.homepage_redirects and report.duda_unsupported_sources
+
+    pdf_bytes = build_redirect_report_pdf("Test", "old.com", "new.com", df, report)
+
+    assert pdf_bytes.startswith(b"%PDF")

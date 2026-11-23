@@ -125,6 +125,10 @@ DEFAULT_INDEX_FILENAMES = {
     "default.htm",
 }
 
+# Warn when this many different old URLs are redirected to the homepage -- Google
+# treats redirecting many old URLs to an unrelated page as a soft 404.
+HOMEPAGE_REDIRECT_WARNING_THRESHOLD = 3
+
 # Warn when a single destination absorbs more than this many source redirects.
 DESTINATION_REUSE_WARNING_THRESHOLD = 5
 

@@ -11,7 +11,7 @@ from matcher import (
     MATCH_TYPE_NO_MATCH,
     MATCH_TYPE_WILDCARD_PATTERN,
 )
-from columns import STATUS_APPROVED
+from columns import STATUS_APPROVED, STATUS_EXCLUDED, STATUS_UNMAPPED
 from config import MAX_ALTERNATIVES
 
 
@@ -58,7 +58,7 @@ def test_token_similarity_match():
     assert r.best.confidence < 100
 
 
-def test_no_reliable_match_falls_back_to_homepage():
+def test_no_reliable_match_is_left_without_a_redirect():
     old_urls = ["https://oldsite.com/xyzzy-quux-plugh/"]
     new_urls = ["https://newsite.com/completely-different-topic-area"]
 
@@ -66,21 +66,50 @@ def test_no_reliable_match_falls_back_to_homepage():
     r = _result_for(results, old_urls[0])
 
     assert r.best is not None
-    assert r.best.new_path == "/"
     assert r.best.match_type == MATCH_TYPE_NO_MATCH
-    assert r.include_default is True
-    assert r.status_default == "Needs Review"
+    assert r.best.new_path == ""
+    assert r.best.new_url == ""
+    assert r.include_default is False
+    assert r.status_default == STATUS_UNMAPPED
+    assert "404" in r.note
 
 
-def test_no_reliable_match_uses_actual_homepage_url_when_present():
+def test_no_reliable_match_never_points_at_the_homepage_even_when_one_exists():
     old_urls = ["https://oldsite.com/xyzzy-quux-plugh/"]
     new_urls = ["https://newsite.com/", "https://newsite.com/completely-different-topic-area"]
 
     results = generate_redirect_suggestions(old_urls, new_urls)
     r = _result_for(results, old_urls[0])
 
-    assert r.best.new_path == "/"
-    assert r.best.new_url == "https://newsite.com/"
+    assert r.best.new_path == ""
+    assert r.include_default is False
+
+
+def test_identical_path_on_the_new_site_needs_no_redirect():
+    old_urls = ["https://oldsite.com/services", "https://oldsite.com/"]
+    new_urls = ["https://newsite.com/services", "https://newsite.com/"]
+
+    results = generate_redirect_suggestions(old_urls, new_urls)
+
+    for old_url in old_urls:
+        r = _result_for(results, old_url)
+        assert r.best.match_type == MATCH_TYPE_EXACT_PATH
+        assert r.include_default is False
+        assert r.status_default == STATUS_EXCLUDED
+        assert "no redirect is needed" in r.note
+
+
+def test_a_trailing_slash_difference_still_gets_a_rule():
+    old_urls = ["https://oldsite.com/services/"]
+    new_urls = ["https://newsite.com/services"]
+
+    results = generate_redirect_suggestions(old_urls, new_urls)
+    r = _result_for(results, old_urls[0])
+
+    assert r.best.match_type == MATCH_TYPE_EXACT_PATH
+    assert r.include_default is True
+    assert r.status_default == STATUS_APPROVED
+    assert r.note == ""
 
 
 def test_alternatives_capped_at_five():
@@ -166,7 +195,7 @@ def test_concatenated_slug_matches_even_when_also_renested_under_a_folder():
     assert r.best.match_type != MATCH_TYPE_NO_MATCH
 
 
-def test_wildcard_pattern_entries_always_go_straight_to_home():
+def test_wildcard_pattern_entries_are_never_redirected():
     """Regression test: GSC's 404 report can include pattern-style entries
     alongside real crawled URLs -- e.g. "/wp-*.php" or
     "/wp-content/themes/Divi-child/*" -- which aren't real pages at all. A
@@ -187,13 +216,15 @@ def test_wildcard_pattern_entries_always_go_straight_to_home():
 
     for old_url in old_urls:
         r = _result_for(results, old_url)
-        assert r.best.new_path == "/"
+        assert r.best.new_path == ""
         assert r.best.match_type == MATCH_TYPE_WILDCARD_PATTERN
-        assert r.status_default == STATUS_APPROVED
+        assert r.include_default is False
+        assert r.status_default == STATUS_UNMAPPED
+        assert r.note
 
 
 def test_wildcard_pattern_wins_over_a_coincidentally_similar_real_page():
-    """A wildcard entry must redirect home even when a real page on the new
+    """A wildcard entry must stay unredirected even when a real page on the new
     site happens to share words with the pattern text -- fuzzy matching
     should never get a chance to run for these at all.
     """
@@ -206,8 +237,9 @@ def test_wildcard_pattern_wins_over_a_coincidentally_similar_real_page():
     results = generate_redirect_suggestions(old_urls, new_urls)
     r = _result_for(results, old_urls[0])
 
-    assert r.best.new_path == "/"
+    assert r.best.new_path == ""
     assert r.best.match_type == MATCH_TYPE_WILDCARD_PATTERN
+    assert r.status_default == STATUS_UNMAPPED
 
 
 def test_multiple_old_urls_each_get_a_result():

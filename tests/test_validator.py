@@ -63,12 +63,85 @@ def test_blank_destination_is_critical():
     assert report.has_critical_errors
 
 
-def test_homepage_fallback_is_not_flagged():
-    """Redirecting an unmatched page to home is expected, not an error."""
-    df = _df([_row("/random-unrelated-page", "/")])
+def test_one_or_two_homepage_redirects_are_not_flagged():
+    df = _df([_row("/discontinued-service", "/"), _row("/old-landing-page", "/")])
     report = validate_redirects(df, "newsite.com")
     assert not report.has_critical_errors
     assert not report.warnings
+    assert len(report.homepage_redirects) == 2
+
+
+def test_many_old_urls_sent_to_the_homepage_warn_about_soft_404s():
+    df = _df([_row(f"/old-{i}", "/") for i in range(3)])
+    report = validate_redirects(df, "newsite.com")
+    assert not report.has_critical_errors
+    assert any("soft 404" in w for w in report.warnings)
+    assert sorted(report.homepage_redirects) == ["/old-0", "/old-1", "/old-2"]
+
+
+def test_the_old_homepage_pointing_at_the_homepage_is_not_counted():
+    df = _df([_row("/index.html", "/")] + [_row(f"/old-{i}", "/about") for i in range(5)])
+    report = validate_redirects(df, "newsite.com")
+    assert report.homepage_redirects == []
+    assert not any("soft 404" in w for w in report.warnings)
+
+
+def test_a_redirect_to_itself_is_critical():
+    report = validate_redirects(_df([_row("/about", "/about")]), "newsite.com")
+    assert report.has_critical_errors
+    assert report.self_redirects == ["/about"]
+    assert any("redirects to itself" in e for e in report.critical_errors)
+
+
+def test_a_trailing_slash_only_rule_is_not_a_self_redirect_or_loop():
+    report = validate_redirects(_df([_row("/about/", "/about")]), "newsite.com")
+    assert not report.has_critical_errors
+    assert report.self_redirects == []
+    assert report.redirect_loops == []
+
+
+def test_a_two_step_loop_is_critical_and_reported_once():
+    df = _df([_row("/a", "/b"), _row("/b", "/a")])
+    report = validate_redirects(df, "newsite.com")
+    assert report.has_critical_errors
+    assert len(report.redirect_loops) == 1
+    assert "Redirect loop" in report.critical_errors[0]
+
+
+def test_a_chain_is_a_warning_naming_the_final_destination():
+    df = _df([_row("/a", "/b"), _row("/b", "/c")])
+    report = validate_redirects(df, "newsite.com")
+    assert not report.has_critical_errors
+    assert report.redirect_chains == ["/a -> /b -> /c"]
+    assert any("straight at '/c'" in w for w in report.warnings)
+
+
+def test_a_long_chain_is_reported_once_from_its_head():
+    df = _df([_row("/a", "/b"), _row("/b", "/c"), _row("/c", "/d")])
+    report = validate_redirects(df, "newsite.com")
+    assert report.redirect_chains == ["/a -> /b -> /c -> /d"]
+
+
+def test_external_destinations_are_not_part_of_chains_or_loops():
+    df = _df([_row("/shop", "https://shop.example.com/"), _row("/b", "/shop")])
+    report = validate_redirects(df, "newsite.com")
+    assert report.redirect_chains == []
+    assert report.redirect_loops == []
+    assert not report.has_critical_errors
+
+
+def test_sources_duda_cannot_redirect_are_flagged():
+    df = _df([_row("/index.php", "/"), _row("/caf%C3%A9", "/cafe"), _row("/page?id=1", "/page"), _row("/fine", "/ok")])
+    report = validate_redirects(df, "newsite.com")
+    assert sorted(report.duda_unsupported_sources) == ["/caf%C3%A9", "/index.php", "/page?id=1"]
+    assert any("Duda can't redirect" in w for w in report.warnings)
+
+
+def test_unmapped_rows_with_no_destination_are_not_validated():
+    df = _df([_row("/gone", "", include=False, status=STATUS_UNMAPPED)])
+    report = validate_redirects(df, "newsite.com")
+    assert not report.has_critical_errors
+    assert report.total_unmapped == 1
 
 
 def test_excluded_and_unmapped_counts():

@@ -74,6 +74,23 @@ class MatchResult:
     explanation: str = ""
     include_default: bool = False
     status_default: str = STATUS_NEEDS_REVIEW
+    # Shown in the review table's Notes column -- why a row defaulted to not
+    # being redirected (unchanged path, no relevant page, wildcard pattern).
+    note: str = ""
+
+
+NOTE_UNCHANGED = (
+    "Unchanged -- the new site already has this exact path, so no redirect is needed "
+    "(an existing page takes priority over a redirect)."
+)
+NOTE_NO_MATCH = (
+    "No relevant page on the new site -- left as a 404, which is the right result for removed content. "
+    "Pick a destination only if a genuinely relevant page exists."
+)
+NOTE_WILDCARD = (
+    "Wildcard/pattern entry from Search Console -- not a real page, so it's left as a 404. Map it "
+    "yourself only if a whole section really moved."
+)
 
 
 def _jaccard(a: set, b: set) -> float:
@@ -160,13 +177,6 @@ def partial_similarity_score(old: NormalizedUrl, new: NormalizedUrl) -> float:
     return 0.50 * slug_score + 0.10 * parent_ratio + 0.10 * depth_sim + 0.30 * token_overlap
 
 
-def _find_homepage(new_norms: list[NormalizedUrl]) -> NormalizedUrl | None:
-    for n in new_norms:
-        if n.normalized_path == "/":
-            return n
-    return None
-
-
 def _build_indexes(new_norms: list[NormalizedUrl]):
     path_index: dict[str, int] = {}
     slug_index: dict[str, list[int]] = {}
@@ -220,9 +230,12 @@ def _explain(match_type: str, confidence: float, old: NormalizedUrl, best_new: N
     if match_type == MATCH_TYPE_WILDCARD_PATTERN:
         return (
             f"'{old.original_path}' is a wildcard/pattern entry, not a real page -- "
-            "it's redirected to the homepage to be revalidated in GSC."
+            "it's left without a redirect so it returns a 404."
         )
-    return "No page on the new site shares enough words or path structure with this URL, so it defaults to the homepage."
+    return (
+        "No page on the new site shares enough words or path structure with this URL, so it is left "
+        "without a redirect (a 404) rather than sent to the homepage."
+    )
 
 
 def match_single_url(
@@ -235,19 +248,14 @@ def match_single_url(
     old_url = old_norm.original_url
     old_path = old_norm.original_path
 
-    # --- Layer 0: wildcard/pattern entries always go straight to home ---
+    # --- Layer 0: wildcard/pattern entries are never real pages -- no redirect ---
     if _is_wildcard_pattern(old_path):
-        home = _find_homepage(new_norms)
-        best = MatchCandidate(
-            new_url=home.original_url if home else "",
-            new_path="/",
-            confidence=100.0,
-            match_type=MATCH_TYPE_WILDCARD_PATTERN,
-        )
+        best = MatchCandidate(new_url="", new_path="", confidence=0.0, match_type=MATCH_TYPE_WILDCARD_PATTERN)
         result = MatchResult(old_url=old_url, old_path=old_path, best=best, alternatives=[])
-        result.explanation = _explain(MATCH_TYPE_WILDCARD_PATTERN, best.confidence, old_norm, home)
-        result.include_default = True
-        result.status_default = STATUS_APPROVED
+        result.explanation = _explain(MATCH_TYPE_WILDCARD_PATTERN, best.confidence, old_norm, None)
+        result.include_default = False
+        result.status_default = STATUS_UNMAPPED
+        result.note = NOTE_WILDCARD
         return result
 
     # --- Layer 1: exact normalized path ---
@@ -262,8 +270,15 @@ def match_single_url(
         )
         result = MatchResult(old_url=old_url, old_path=old_path, best=best, alternatives=[])
         result.explanation = _explain(MATCH_TYPE_EXACT_PATH, best.confidence, old_norm, n)
-        result.include_default = True
-        result.status_default = STATUS_APPROVED
+        if old_path == n.original_path:
+            # The very same URL exists on the new site: a rule would do nothing
+            # (existing pages win over redirects) and risks looping on itself.
+            result.include_default = False
+            result.status_default = STATUS_EXCLUDED
+            result.note = NOTE_UNCHANGED
+        else:
+            result.include_default = True
+            result.status_default = STATUS_APPROVED
         return result
 
     # --- Layer 2: exact final slug ---
@@ -305,20 +320,16 @@ def match_single_url(
     scored.sort(key=lambda t: t[1], reverse=True)
 
     if not scored or scored[0][1] < NEEDS_REVIEW_THRESHOLD:
-        # Nothing reliable was found -- fall back to the new site's homepage
-        # rather than leaving this URL unmapped.
-        home = _find_homepage(new_norms)
-        best = MatchCandidate(
-            new_url=home.original_url if home else "",
-            new_path="/",
-            confidence=0.0,
-            match_type=MATCH_TYPE_NO_MATCH,
-        )
+        # Nothing relevant was found. Redirecting many unrelated URLs to the
+        # homepage is treated by Google as a soft 404, so leave this one
+        # without a redirect; a person can still pick a destination.
+        best = MatchCandidate(new_url="", new_path="", confidence=0.0, match_type=MATCH_TYPE_NO_MATCH)
         alternatives = _candidates_to_alternatives(scored, new_norms)
         result = MatchResult(old_url=old_url, old_path=old_path, best=best, alternatives=alternatives)
-        result.explanation = _explain(MATCH_TYPE_NO_MATCH, 0, old_norm, home)
-        result.include_default = True
-        result.status_default = STATUS_NEEDS_REVIEW
+        result.explanation = _explain(MATCH_TYPE_NO_MATCH, 0, old_norm, None)
+        result.include_default = False
+        result.status_default = STATUS_UNMAPPED
+        result.note = NOTE_NO_MATCH
         return result
 
     best_idx, best_score, best_type = scored[0]

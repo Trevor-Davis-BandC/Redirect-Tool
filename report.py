@@ -24,6 +24,7 @@ from columns import (
     STATUS_EXCLUDED,
     STATUS_UNMAPPED,
 )
+from config import HOMEPAGE_REDIRECT_WARNING_THRESHOLD
 from validator import ValidationReport
 
 PAGE_MARGIN = 15
@@ -152,6 +153,25 @@ def build_redirect_report_pdf(
         pdf,
         [f"Blank or missing destination: {p}" for p in report.blank_or_malformed],
         "No blank or missing destinations.",
+    )
+    _bullet_list(
+        pdf,
+        [f"Redirects to itself: {p}" for p in report.self_redirects]
+        + [f"Redirect loop: {c}" for c in report.redirect_loops],
+        "No self-redirects or redirect loops.",
+    )
+    _bullet_list(pdf, [f"Redirect chain: {c}" for c in report.redirect_chains], "No redirect chains.")
+    _bullet_list(
+        pdf,
+        [f"Redirected to the homepage: {p}" for p in report.homepage_redirects]
+        if len(report.homepage_redirects) >= HOMEPAGE_REDIRECT_WARNING_THRESHOLD
+        else [],
+        "No large group of old URLs redirected to the homepage.",
+    )
+    _bullet_list(
+        pdf,
+        [f"Duda can't redirect this source: {p}" for p in report.duda_unsupported_sources],
+        "No sources Duda is unable to redirect.",
     )
 
     return bytes(pdf.output())

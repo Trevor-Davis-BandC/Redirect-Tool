@@ -57,6 +57,7 @@ from exporter import (
     read_template_headers,
 )
 from report import build_redirect_report_pdf
+from review_edits import is_in_path_prefix, merge_editor_edits, path_prefix_summary
 from config import AUTH_COOKIE_NAME, AUTH_SESSION_HOURS, MAX_REDIRECTS_PER_CSV
 from auth_token import make_token, verify_token
 from project_storage import (
@@ -114,53 +115,6 @@ def _new_site_path_to_url(new_urls: list[str]) -> dict[str, str]:
     lands on the intended page, even though only the path is ever exported.
     """
     return {build_normalized_url(u).original_path: u for u in new_urls}
-
-
-def _path_prefix(path: str) -> str:
-    """The first path segment, e.g. "/collections/x/products/y" -> "/collections".
-
-    Deliberately NOT a substring match -- "/collections/x/products/y" contains
-    the text "/products" but does not belong under the "/products" prefix, so
-    this only ever looks at the leading segment, not anywhere else in the path.
-    """
-    segments = [s for s in (path or "").split("/") if s]
-    return "/" + segments[0] if segments else "/ (home)"
-
-
-def _is_in_path_prefix(path: str, prefix: str) -> bool:
-    if prefix == "/ (home)":
-        return not path or path == "/"
-    return path == prefix or path.startswith(prefix + "/")
-
-
-def _path_prefix_summary(df: pd.DataFrame) -> pd.DataFrame:
-    """Group old paths by their first path segment and show, per group, how
-    many defaulted to the homepage -- a prefix where most URLs defaulted
-    suggests that whole section structurally doesn't belong on the new site
-    (e.g. an old platform's full product catalog, which has nothing to match
-    against on a small marketing site), worth noticing before reviewing rows
-    one at a time. Platform-agnostic by design: it's just "did this whole
-    group fail to match," not a guess at any particular platform's URLs.
-    """
-    work = df[[COL_OLD_PATH, COL_NEW_PATH]].copy()
-    work["_prefix"] = work[COL_OLD_PATH].map(_path_prefix)
-    work["_defaulted"] = work[COL_NEW_PATH] == "/"
-
-    rows = []
-    for prefix, group in work.groupby("_prefix"):
-        total = len(group)
-        defaulted = int(group["_defaulted"].sum())
-        rows.append(
-            {
-                "Path prefix": prefix,
-                "URLs": total,
-                "Defaulted to home": defaulted,
-                "Defaulted %": round(100 * defaulted / total) if total else 0,
-                "Example": group[COL_OLD_PATH].iloc[0],
-            }
-        )
-    summary = pd.DataFrame(rows, columns=["Path prefix", "URLs", "Defaulted to home", "Defaulted %", "Example"])
-    return summary.sort_values("Defaulted to home", ascending=False).reset_index(drop=True)
 
 
 def _sync_new_url_column(df: pd.DataFrame) -> pd.DataFrame:
@@ -802,7 +756,7 @@ def _generate_and_open_review(old_urls: list[str], new_urls: list[str]) -> None:
                 COL_NEW_PATH: best.new_path,
                 COL_REDIRECT_TYPE: REDIRECT_TYPE_PERMANENT,
                 COL_STATUS: r.status_default,
-                COL_NOTES: "",
+                COL_NOTES: r.note,
             }
         )
 
@@ -916,13 +870,16 @@ def render_review_page() -> None:
 
     with st.expander("How this page works", icon=":material/help:"):
         st.markdown(
-            "Every old URL gets a suggested destination, and the table below lets you adjust any of "
-            "them by hand. The sections below cover the bulk tools -- useful once a project has more "
+            "Every old URL gets a suggested destination only when a relevant page exists on the new "
+            "site. URLs with no relevant match are marked **Unmapped** and left out of the export, so "
+            "they return a 404 -- which Google prefers to redirecting unrelated pages to the homepage "
+            "(it treats that as a soft 404). Pages whose exact path already exists on the new site are "
+            "marked **Excluded**, since no redirect is needed. The table lets you adjust any row by "
+            "hand, and the sections below cover the bulk tools -- useful once a project has more "
             "rows than it makes sense to review one at a time.\n\n"
             "**Path-prefix match summary** -- groups old URLs by their first path segment and shows how "
-            "many defaulted to the homepage in each group. A small group defaulting is normal (a stray "
-            "legacy URL). A *large* group defaulting -- a full product catalog, a blog with no new-site "
-            "equivalent -- means that whole section structurally doesn't belong on the new site, which "
+            "had no match in each group. A few unmatched URLs is normal (a stray legacy URL). A *large* "
+            "group with no match -- a full product catalog, a blog with no new-site equivalent -- means that whole section structurally doesn't belong on the new site, which "
             "is exactly what the next three tools are for. Click a row to select every URL in that "
             "prefix below, instead of searching for it.\n\n"
             "**The three bulk actions, and when to reach for each:**\n"
@@ -972,24 +929,25 @@ def render_review_page() -> None:
         st.session_state.last_prefix_selection_name = None
 
     st.write(
-        "Every old URL gets a destination -- pages with no clear match on the new site default to "
-        "the homepage (`/`). Pick **Suggested New Path** from the dropdown to point somewhere else, "
-        "uncheck **Include** to exclude a row, or set **Status** to *Unmapped* for pages you're "
-        "intentionally not redirecting. **Suggested New URL** shows where that path actually lives on "
+        "Pages with no relevant match on the new site are **Unmapped** and not exported -- they'll "
+        "return a 404, which is the right result for removed content. Pick a **Suggested New Path** "
+        "from the dropdown to redirect one anyway (it's then included automatically), uncheck "
+        "**Include** to drop a row, or use the bulk tools below. Send a URL to the homepage (`/`) only "
+        "when the homepage truly is the right replacement. **Suggested New URL** shows where that path actually lives on "
         "the new/staging site right now, so you can click through and double-check the redirect lands "
         "in the right place -- only the path is ever exported, never that domain."
     )
 
-    prefix_summary = _path_prefix_summary(df)
-    flagged = prefix_summary[(prefix_summary["URLs"] >= 3) & (prefix_summary["Defaulted %"] >= 80)]
+    prefix_summary = path_prefix_summary(df)
+    flagged = prefix_summary[(prefix_summary["URLs"] >= 3) & (prefix_summary["No match %"] >= 80)]
     summary_label = (
-        f"Path-prefix match summary -- {len(flagged)} section{'s' if len(flagged) != 1 else ''} look unmatched"
+        f"Path-prefix match summary -- {len(flagged)} section{'s look' if len(flagged) != 1 else ' looks'} unmatched"
         if len(flagged) else "Path-prefix match summary"
     )
     with st.expander(summary_label, expanded=bool(len(flagged))):
         st.caption(
-            "Old paths grouped by their first path segment, with how many defaulted to the homepage. A "
-            "prefix where most URLs defaulted suggests that whole section structurally doesn't belong on "
+            "Old paths grouped by their first path segment, with how many had no match. A "
+            "prefix where most URLs had no match suggests that whole section structurally doesn't belong on "
             "the new site (e.g. an old platform's full product catalog) -- worth bulk-redirecting "
             "elsewhere below rather than reviewing it one row at a time. Click a row to select every URL "
             "in that prefix in \"Bulk update redirects\" below."
@@ -1012,7 +970,7 @@ def render_review_page() -> None:
             if st.session_state.get("_last_prefix_click") != clicked_prefix:
                 st.session_state._last_prefix_click = clicked_prefix
                 st.session_state.bulk_selected_paths = [
-                    p for p in df[COL_OLD_PATH] if _is_in_path_prefix(p, clicked_prefix)
+                    p for p in df[COL_OLD_PATH] if is_in_path_prefix(p, clicked_prefix)
                 ]
                 st.session_state.last_prefix_selection_count = len(st.session_state.bulk_selected_paths)
                 st.session_state.last_prefix_selection_name = clicked_prefix
@@ -1080,11 +1038,9 @@ def render_review_page() -> None:
 
     # Merge edits (keyed by Old URL, which is unique per redirect) back into the full dataframe.
     if not edited.equals(display_df):
-        full_df = st.session_state.redirect_df.set_index(COL_OLD_URL, drop=False)
-        edited_indexed = edited.set_index(COL_OLD_URL, drop=False)
-        for old_url, edited_row in edited_indexed.iterrows():
-            full_df.loc[old_url] = edited_row
-        st.session_state.redirect_df = _sync_new_url_column(full_df.reset_index(drop=True))
+        st.session_state.redirect_df = _sync_new_url_column(
+            merge_editor_edits(st.session_state.redirect_df, edited)
+        )
         df = st.session_state.redirect_df
 
     st.markdown("---")
@@ -1115,7 +1071,7 @@ def render_review_page() -> None:
         st.write("")
         if st.button("Select this group", disabled=prefix_choice == "(choose a prefix)"):
             st.session_state.bulk_selected_paths = [
-                p for p in all_old_paths if _is_in_path_prefix(p, prefix_choice)
+                p for p in all_old_paths if is_in_path_prefix(p, prefix_choice)
             ]
             st.rerun()
 
@@ -1324,6 +1280,11 @@ def render_export_page() -> None:
         [f"{s} -> {d}" for s, d in report.duplicate_redirect_rules],
     )
     _list_section("Blank or missing destinations", report.blank_or_malformed)
+    _list_section("Redirects that point at themselves", report.self_redirects)
+    _list_section("Redirect loops", report.redirect_loops)
+    _list_section("Redirect chains", report.redirect_chains)
+    _list_section("Old URLs redirected to the homepage", report.homepage_redirects)
+    _list_section("Sources Duda can't redirect (.php, %, or a query string)", report.duda_unsupported_sources)
 
     st.markdown("---")
     st.subheader("Redirect Report")
@@ -1357,10 +1318,13 @@ def render_export_page() -> None:
         st.session_state.export_despite_warnings = export_anyway
     else:
         export_anyway = True
-        if report.warnings:
-            st.warning(f"{len(report.warnings)} warning(s) found. Review them above before exporting.")
-        else:
+        if not report.warnings:
             st.success("No validation issues found.")
+
+    if report.warnings:
+        st.warning(f"{len(report.warnings)} warning(s) found. Review them before exporting:")
+        for w in report.warnings:
+            st.write(f"- {w}")
 
     can_export = (not report.has_critical_errors) or export_anyway
 
