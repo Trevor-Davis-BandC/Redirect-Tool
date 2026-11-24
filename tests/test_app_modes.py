@@ -47,3 +47,27 @@ def test_returning_to_new_project_shows_the_saved_mode():
     at.session_state["page"] = "new_project"
     at.run()
     assert at.radio(key="project_mode_choice").value == "gsc"
+
+
+def test_link_checker_page_runs_and_lists_broken_links(monkeypatch):
+    import crawler
+    from test_crawler import FakeResponse, _page, make_fake_fetch
+
+    url_map = {
+        "https://example.com/robots.txt": FakeResponse(404, b"", "text/plain"),
+        "https://example.com/": _page('<a href="/gone">Gone</a>', "https://example.com/"),
+    }
+    monkeypatch.setattr(crawler, "_fetch", make_fake_fetch(url_map))
+
+    at = _app()
+    at.session_state["page"] = "link_check"
+    at.run()
+    assert not at.exception
+    assert at.header[0].value == "Broken Link Checker"
+
+    at.text_input[0].set_value("example.com")
+    next(b for b in at.button if b.label == "Check for Broken Links").click()
+    at.run()
+    assert not at.exception
+    assert [m.value for m in at.metric] == ["1", "2", "1", "0"]
+    assert "https://example.com/gone" in at.dataframe[0].value.iloc[0, 0]

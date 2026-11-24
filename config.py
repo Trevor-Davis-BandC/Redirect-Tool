@@ -69,6 +69,9 @@ AUDIT_MAX_REDIRECT_HOPS = 5
 AUDIT_TIME_BUDGET_SECONDS = 240
 AUDIT_CRAWL_TIME_BUDGET_SECONDS = 150
 
+# --- Standalone broken-link check (crawls one site's internal links) ---
+LINKCHECK_TIME_BUDGET_SECONDS = 240
+
 # --- Matching thresholds ---
 EXACT_PATH_CONFIDENCE = 100
 EXACT_SLUG_CONFIDENCE_MAX = 96

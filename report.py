@@ -175,3 +175,75 @@ def build_redirect_report_pdf(
     )
 
     return bytes(pdf.output())
+
+
+def build_link_check_pdf(project_name: str, domain: str, result) -> bytes:
+    """Build a PDF listing a site's broken internal links and where each one
+    appears, for sharing with whoever will fix them. `result` is a
+    linkcheck.LinkCheckResult."""
+    from linkcheck import describe_status, is_hard_failure
+
+    pdf = _ReportPDF(orientation="P", unit="mm", format="A4")
+    pdf.set_auto_page_break(auto=True, margin=PAGE_MARGIN)
+    pdf.set_margins(PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN)
+    pdf.add_page()
+
+    pdf.set_font("Helvetica", "B", 18)
+    pdf.set_text_color(*NAVY)
+    pdf.cell(0, 12, "Broken Link Report", new_x="LMARGIN", new_y="NEXT")
+
+    pdf.set_font("Helvetica", "", 10)
+    pdf.set_text_color(*GRAY)
+    pdf.cell(0, 6, _pdf_safe(f"Project: {project_name or '(untitled)'}"), new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, _pdf_safe(f"Site: {domain or '(not set)'}"), new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, f"Generated: {date.today().isoformat()}", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(4)
+    pdf.set_text_color(0, 0, 0)
+
+    _section_title(pdf, "Summary")
+    pdf.set_font("Helvetica", "", 10)
+    for line in (
+        f"Pages crawled: {result.pages_crawled}",
+        f"Links checked: {result.links_checked}",
+        f"Broken links (page not found): {result.dead_count}",
+        f"Other links that didn't load: {result.other_count}",
+    ):
+        pdf.cell(0, 6, line, new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(3)
+
+    def _lines(links) -> list[str]:
+        lines = []
+        for b in links:
+            status = f"HTTP {b.status}" if b.status else "no response"
+            line = f"{b.url}  [{status}]"
+            if b.linked_from:
+                line += "\n    Found on: " + "\n    Found on: ".join(b.linked_from)
+            lines.append(line)
+        return lines
+
+    dead = [b for b in result.broken if is_hard_failure(b.status)]
+    other = [b for b in result.broken if not is_hard_failure(b.status)]
+
+    _section_title(pdf, f"Broken Links ({len(dead)})")
+    _bullet_list(pdf, _lines(dead), "No broken links were found.")
+
+    _section_title(pdf, f"Other Links That Didn't Load ({len(other)})")
+    if other:
+        pdf.set_font("Helvetica", "I", 9)
+        pdf.multi_cell(
+            0,
+            5,
+            "These returned an error other than 'not found' -- some sites refuse automated "
+            "checkers, so check them in a browser before treating them as broken. Reasons: "
+            + "; ".join(sorted({describe_status(b.status) for b in other})) + ".",
+            new_x="LMARGIN",
+            new_y="NEXT",
+        )
+        pdf.ln(1)
+    _bullet_list(pdf, _lines(other), "None.")
+
+    if result.warnings or result.truncated:
+        _section_title(pdf, "Notes")
+        _bullet_list(pdf, list(dict.fromkeys(result.warnings))[:20], "None.")
+
+    return bytes(pdf.output())

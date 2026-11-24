@@ -17,7 +17,9 @@ from __future__ import annotations
 import re
 import time
 from collections import deque
-from urllib.parse import urljoin, urlsplit
+from dataclasses import dataclass, field
+from typing import Callable
+from urllib.parse import urldefrag, urljoin, urlsplit
 
 import requests
 from bs4 import BeautifulSoup
@@ -37,6 +39,31 @@ _SKIP_LINK_SCHEMES = ("#", "mailto:", "tel:", "javascript:")
 
 def _now() -> float:
     return time.monotonic()
+
+
+# Cap on how many different pages are remembered per broken link -- a broken
+# link in the site-wide menu is "on" every page, and listing hundreds of them
+# helps nobody.
+MAX_REFERRERS_PER_LINK = 10
+
+
+@dataclass
+class BrokenLink:
+    """An internal link that didn't load. `status` is the HTTP status code,
+    or 0 when the server never answered (timeout, connection error)."""
+
+    url: str
+    status: int
+    linked_from: list[str] = field(default_factory=list)
+
+
+@dataclass
+class LinkReport:
+    """Optional crawl output for a broken-link check: every internal link that
+    failed, plus how many link targets were requested in total."""
+
+    broken: dict[str, BrokenLink] = field(default_factory=dict)
+    links_checked: int = 0
 
 
 # Some site builders (Nuxt/Vue-based ones in particular) render pages
@@ -110,7 +137,8 @@ def _extract_links(page_url: str, html: bytes) -> list[str]:
         href = a["href"].strip()
         if not href or href.startswith(_SKIP_LINK_SCHEMES):
             continue
-        links.append(urljoin(page_url, href))
+        # "/about#team" and "/about" are the same page -- don't fetch it twice.
+        links.append(urldefrag(urljoin(page_url, href))[0])
     return links
 
 
@@ -119,6 +147,8 @@ def crawl_site_links(
     max_pages: int = MAX_CRAWL_PAGES,
     broken_out: dict[str, str] | None = None,
     time_budget: float | None = None,
+    link_report: LinkReport | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> SitemapResult:
     """Crawl a site's internal links from its homepage as a sitemap fallback.
 
@@ -126,6 +156,11 @@ def crawl_site_links(
     404/410, mapped to the first page that linked to it -- the link as it was
     written, not where a redirect ended up. `time_budget` stops the crawl
     after that many seconds, keeping whatever was found.
+
+    `link_report`, when given, collects every internal link that failed (any
+    4xx/5xx status, or no answer at all) with the pages it appears on, for a
+    standalone broken-link check. `on_progress(links_checked, queued)` is
+    called after each request so a UI can show the crawl moving.
     """
     result = SitemapResult(domain=domain_or_url)
 
@@ -162,6 +197,8 @@ def crawl_site_links(
     seen_found: set[str] = set()
     embedded_state_links: set[str] = set()
 
+    inbound: dict[str, list[str]] = {}
+    requested = 0
     started = _now()
     timed_out = False
 
@@ -182,17 +219,27 @@ def crawl_site_links(
         if parts.path.lower().endswith(CRAWL_SKIP_EXTENSIONS):
             continue
 
+        requested += 1
+        if link_report is not None:
+            link_report.links_checked = requested
+        if on_progress is not None:
+            on_progress(requested, len(queue))
+
         try:
             resp = _fetch(url, session)
         except BlockedUrlError:
             continue
         except requests.exceptions.RequestException as exc:
             result.warnings.append(_friendly_request_error(exc, url))
+            if link_report is not None and referrer:
+                link_report.broken.setdefault(url, BrokenLink(url, 0))
             continue
 
         if resp.status_code in (404, 410) and broken_out is not None:
             broken_out.setdefault(url, referrer)
         if resp.status_code >= 400:
+            if link_report is not None and referrer:
+                link_report.broken.setdefault(url, BrokenLink(url, resp.status_code))
             continue
         if "html" not in resp.headers.get("Content-Type", "").lower():
             continue
@@ -207,8 +254,16 @@ def crawl_site_links(
         embedded_links = _extract_embedded_state_paths(final_url, resp.text)
         embedded_state_links.update(embedded_links)
         for link in _extract_links(final_url, resp.content) + embedded_links:
+            if link_report is not None and _is_same_site(link, root_netloc):
+                pages = inbound.setdefault(link, [])
+                if final_url not in pages and len(pages) < MAX_REFERRERS_PER_LINK:
+                    pages.append(final_url)
             if link not in visited:
                 queue.append((link, final_url))
+
+    if link_report is not None:
+        for url, broken in link_report.broken.items():
+            broken.linked_from = inbound.get(url, [])
 
     result.urls = found_urls
     recovered = embedded_state_links & seen_found

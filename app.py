@@ -56,7 +56,14 @@ from exporter import (
     guess_column_mapping,
     read_template_headers,
 )
-from report import build_redirect_report_pdf
+from report import build_link_check_pdf, build_redirect_report_pdf
+from linkcheck import (
+    LinkCheckResult,
+    broken_links_csv,
+    broken_links_dataframe,
+    build_link_check_filename,
+    check_site_links,
+)
 from review_edits import is_in_path_prefix, merge_editor_edits, path_prefix_summary
 from config import AUTH_COOKIE_NAME, AUTH_SESSION_HOURS, MAX_REDIRECTS_PER_CSV
 from auth_token import make_token, verify_token
@@ -79,6 +86,8 @@ PAGE_NEW_PROJECT = "new_project"
 PAGE_DISCOVERY = "discovery"
 PAGE_REVIEW = "review"
 PAGE_EXPORT = "export"
+# A standalone tool, not a step in the redirect workflow, so it isn't in PAGE_ORDER.
+PAGE_LINK_CHECK = "link_check"
 
 PAGE_ORDER = [PAGE_NEW_PROJECT, PAGE_DISCOVERY, PAGE_REVIEW, PAGE_EXPORT]
 PAGE_LABELS = {
@@ -216,6 +225,8 @@ def init_session_state() -> None:
         "audit_source_counts": {},
         "audit_linked_from": {},
         "audit_crawled_pages": 0,
+        "link_check_result": None,
+        "link_check_domain": "",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -253,6 +264,19 @@ def render_sidebar() -> None:
             ):
                 st.session_state.page = page_key
                 st.rerun()
+
+        st.markdown("---")
+        st.markdown("### Tools")
+        on_link_check = st.session_state.page == PAGE_LINK_CHECK
+        if st.button(
+            "Broken Link Checker",
+            key="nav_link_check",
+            icon=":material/arrow_forward:" if on_link_check else None,
+            width="stretch",
+            disabled=on_link_check,
+        ):
+            st.session_state.page = PAGE_LINK_CHECK
+            st.rerun()
 
         st.markdown("---")
         st.markdown("### Project")
@@ -311,6 +335,101 @@ def render_sidebar() -> None:
                 st.session_state.page = PAGE_REVIEW
                 st.success(f"Loaded project '{data['project_name']}'.")
                 st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# Tool: Broken link checker
+# ---------------------------------------------------------------------------
+
+def render_link_check_page() -> None:
+    st.header("Broken Link Checker")
+
+    with st.expander("How this page works", icon=":material/help:"):
+        st.markdown(
+            "Crawls a live site starting at its homepage, follows its own internal links, and "
+            "lists every link that doesn't load -- along with the page it's on, so you know where to "
+            "fix it. Use it as a launch checklist item or a periodic health check.\n\n"
+            "**What counts as broken:** *Page not found* (404/410) is a dead link. Other failures "
+            "(server errors, or a site refusing automated visitors with 401/403/429) are listed "
+            "separately as *didn't load* -- open those in a browser before assuming they're broken.\n\n"
+            "**What it doesn't check:** links to other websites, images, PDFs and downloads, and "
+            "pages blocked by the site's robots.txt. Links that only exist after JavaScript runs "
+            "(most Duda sites don't rely on this) can also be missed.\n\n"
+            "**Limits:** up to 300 pages or about four minutes per run, whichever comes first -- "
+            "a warning appears if a run is cut short. Each page checked is a real request to the "
+            "live site, so it's best run once rather than repeatedly."
+        )
+
+    with st.form("link_check_form"):
+        domain = st.text_input(
+            "Website to check",
+            value=st.session_state.link_check_domain,
+            placeholder="example.com",
+        )
+        submitted = st.form_submit_button("Check for Broken Links", type="primary")
+
+    if submitted:
+        domain = domain.strip()
+        st.session_state.link_check_domain = domain
+        if not domain:
+            st.error("Enter a website to check.")
+            st.session_state.link_check_result = None
+        else:
+            status_box = st.empty()
+
+            def _on_progress(checked: int, queued: int) -> None:
+                status_box.info(f"Checked {checked} links so far... ({queued} waiting in the queue)")
+
+            result = check_site_links(domain, on_progress=_on_progress)
+            status_box.empty()
+            st.session_state.link_check_result = result
+
+    result: LinkCheckResult | None = st.session_state.link_check_result
+    if result is None:
+        return
+
+    for error in result.errors:
+        st.error(error)
+    if result.errors and not result.pages_crawled:
+        return
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Pages crawled", result.pages_crawled)
+    col2.metric("Links checked", result.links_checked)
+    col3.metric("Broken (not found)", result.dead_count)
+    col4.metric("Other failures", result.other_count)
+
+    for warning in dict.fromkeys(result.warnings):
+        st.warning(warning)
+
+    if not result.broken:
+        st.success("No broken internal links found.")
+        return
+
+    st.dataframe(broken_links_dataframe(result), hide_index=True, width="stretch")
+    st.caption(
+        "\"Found on\" shows the first page containing the link. The CSV and PDF list every page "
+        "(up to 10 per link)."
+    )
+
+    name = st.session_state.link_check_domain
+    csv_col, pdf_col = st.columns(2)
+    with csv_col:
+        st.download_button(
+            "Download CSV",
+            data=broken_links_csv(result),
+            file_name=build_link_check_filename(name, "csv"),
+            mime="text/csv",
+            width="stretch",
+        )
+    with pdf_col:
+        st.download_button(
+            "Download PDF Report",
+            data=build_link_check_pdf(st.session_state.project_name, name, result),
+            file_name=build_link_check_filename(name, "pdf"),
+            mime="application/pdf",
+            width="stretch",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1498,6 +1617,8 @@ def main() -> None:
         render_review_page()
     elif page == PAGE_EXPORT:
         render_export_page()
+    elif page == PAGE_LINK_CHECK:
+        render_link_check_page()
     else:
         st.session_state.page = PAGE_NEW_PROJECT
         render_new_project_page()
